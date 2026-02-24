@@ -769,7 +769,10 @@ static async Task<bool> SendMessageToCurrentChatAsync(IPage page, string message
 
     if (!focused) return false;
 
-    await page.Keyboard.TypeAsync(message);
+    // Важно: InsertText вставляет весь текст сразу (включая переносы строк)
+    // без по-символьных Enter, чтобы не отправлять сообщения частями.
+    await page.Keyboard.InsertTextAsync(message);
+    await page.WaitForTimeoutAsync(300);
     await page.Keyboard.PressAsync("Enter");
     return true;
 }
