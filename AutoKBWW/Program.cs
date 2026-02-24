@@ -113,13 +113,15 @@ async Task RunP2PAutomationAsync(IPage page)
 {
     stopAllRequested = false;
 
-    var marketPrice = await ResolveMarketPriceAsync(
+    var targetPriceRub = await ReadTargetPriceRubAsync(
         getCached: () => (cachedMarketPriceRub, cachedMarketPriceAt),
         setCached: value => { cachedMarketPriceRub = value.Price; cachedMarketPriceAt = value.At; });
-    Console.WriteLine($"Рыночная цена USDT/RUB: {marketPrice.ToString(CultureInfo.InvariantCulture)}");
+    Console.WriteLine($"Целевая цена для отбора: {targetPriceRub.ToString(CultureInfo.InvariantCulture)} RUB");
 
-    var availableAmountRub = ReadAvailableAmountRub();
-    Console.WriteLine($"Доступный бюджет: {availableAmountRub.ToString(CultureInfo.InvariantCulture)} RUB");
+    var volumeFilter = ReadVolumeFilterRub();
+    Console.WriteLine(volumeFilter.MinRub is null
+        ? $"Фильтр объема: до {volumeFilter.MaxRub.ToString(CultureInfo.InvariantCulture)} RUB"
+        : $"Фильтр объема: от {volumeFilter.MinRub.Value.ToString(CultureInfo.InvariantCulture)} до {volumeFilter.MaxRub.ToString(CultureInfo.InvariantCulture)} RUB");
 
     Console.WriteLine("Запускаю автоматизацию: P2P -> Купить -> Tether (USDT) -> СБП");
     var sequence = new[] { "P2P", "Купить", "Tether (USDT)", "СБП" };
@@ -151,10 +153,10 @@ async Task RunP2PAutomationAsync(IPage page)
         PrintMenuToConsole(await CollectMenuDataAsync(page));
     }
 
-    var best = await FindBestOfferWithPagingAsync(page, marketPrice, availableAmountRub);
+    var best = await FindBestOfferWithPagingAsync(page, targetPriceRub, volumeFilter);
     if (best is null)
     {
-        Console.WriteLine("Объявления с ценой <= рыночной не найдены.");
+        Console.WriteLine("Объявления по заданным параметрам не найдены.");
         return;
     }
 
@@ -174,10 +176,13 @@ async Task RunP2PAutomationAsync(IPage page)
         return;
     }
 
-    PrintDealInfo(await ExtractDealInfoAsync(page));
+    var dealInfo = await ExtractDealInfoAsync(page);
+    PrintDealInfo(dealInfo);
+
+    await NotifyFoundDealToVo8rAsync(page, best, dealInfo);
 }
 
-async Task<P2POffer?> FindBestOfferWithPagingAsync(IPage page, double marketPrice, double availableAmountRub)
+async Task<P2POffer?> FindBestOfferWithPagingAsync(IPage page, double targetPriceRub, VolumeFilter volumeFilter)
 {
     var attempt = 0;
     var lastNoDealNotifyAt = DateTimeOffset.UtcNow;
@@ -199,14 +204,14 @@ async Task<P2POffer?> FindBestOfferWithPagingAsync(IPage page, double marketPric
         PrintOffers(offers);
 
         var eligible = offers
-            .Where(x => x.Price <= marketPrice)
-            .Where(x => IsOfferVolumeSuitable(x, availableAmountRub))
+            .Where(x => x.Price <= targetPriceRub)
+            .Where(x => IsOfferVolumeSuitable(x, volumeFilter))
             .OrderBy(x => x.Price)
             .ToList();
         if (eligible.Count > 0)
         {
             var best = eligible.First();
-            Console.WriteLine($"Найдено предложение <= рынка: {best.RawPrice} ({best.Seller})");
+            Console.WriteLine($"Найдено подходящее предложение: {best.RawPrice} ({best.Seller})");
             return best;
         }
 
@@ -282,29 +287,124 @@ async Task SendNoDealsNotificationAsync(IPage page)
     await WaitWithStopAsync(page, 3000);
 }
 
-double ReadAvailableAmountRub()
+async Task NotifyFoundDealToVo8rAsync(IPage page, P2POffer best, DealInfo dealInfo)
 {
+    Console.WriteLine("Отправляю найденное объявление в VO8R...");
+
+    await WaitWithStopAsync(page, 3000);
+    if (stopAllRequested) return;
+
+    var openedVo8r = await ClickChatByTitleAsync(page, "VO8R");
+    if (!openedVo8r)
+    {
+        Console.WriteLine("Чат VO8R не найден в закрепленных.");
+        return;
+    }
+
+    await WaitWithStopAsync(page, 3000);
+    if (stopAllRequested) return;
+
+    var text = $"Найдена сделка:\n[{best.DisplayIndex}] {best.SourceLabel}\n\n{FormatDealMessage(dealInfo.MessageText)}";
+    var sent = await SendMessageToCurrentChatAsync(page, text);
+    if (!sent)
+    {
+        Console.WriteLine("Не удалось отправить сообщение о найденной сделке в VO8R.");
+    }
+
+    await WaitWithStopAsync(page, 3000);
+    if (stopAllRequested) return;
+
+    var backToBot = await ClickChatByTitleAsync(page, "Crypto");
+    if (!backToBot)
+    {
+        Console.WriteLine("Не удалось вернуться в чат CryptoBot после уведомления.");
+        return;
+    }
+
+    await WaitWithStopAsync(page, 3000);
+}
+
+VolumeFilter ReadVolumeFilterRub()
+{
+    var max = ReadPositiveDouble("Введите МАКСИМАЛЬНЫЙ объем сделки в RUB: ");
+
     while (true)
     {
-        Console.Write("Введите доступный объем сделки в RUB для AUTO P2P: ");
+        Console.Write("Введите МИНИМАЛЬНЫЙ объем в RUB (или Enter чтобы пропустить): ");
         var input = Console.ReadLine();
-        if (double.TryParse((input ?? string.Empty).Replace(',', '.'), NumberStyles.Any, CultureInfo.InvariantCulture, out var amount) && amount > 0)
+        if (string.IsNullOrWhiteSpace(input))
         {
-            return amount;
+            return new VolumeFilter { MinRub = null, MaxRub = max };
         }
 
-        Console.WriteLine("Некорректный объем. Пример: 50000");
+        if (double.TryParse(input.Replace(',', '.'), NumberStyles.Any, CultureInfo.InvariantCulture, out var min) && min > 0 && min <= max)
+        {
+            return new VolumeFilter { MinRub = min, MaxRub = max };
+        }
+
+        Console.WriteLine("Некорректный минимум. Он должен быть > 0 и <= максимума.");
     }
 }
 
-static bool IsOfferVolumeSuitable(P2POffer offer, double availableAmountRub)
+async Task<double> ReadTargetPriceRubAsync(
+    Func<(double? Price, DateTimeOffset At)> getCached,
+    Action<(double Price, DateTimeOffset At)> setCached)
+{
+    while (true)
+    {
+        Console.Write("Режим цены: 1 - рыночная, 2 - своя цена: ");
+        var mode = Console.ReadLine()?.Trim();
+
+        if (mode == "1")
+        {
+            return await ResolveMarketPriceAsync(getCached, setCached);
+        }
+
+        if (mode == "2")
+        {
+            return ReadPositiveDouble("Введите свою целевую цену USDT/RUB: ");
+        }
+
+        Console.WriteLine("Выберите 1 или 2.");
+    }
+}
+
+double ReadPositiveDouble(string prompt)
+{
+    while (true)
+    {
+        Console.Write(prompt);
+        var input = Console.ReadLine();
+        if (double.TryParse((input ?? string.Empty).Replace(',', '.'), NumberStyles.Any, CultureInfo.InvariantCulture, out var value) && value > 0)
+        {
+            return value;
+        }
+
+        Console.WriteLine("Некорректное число, попробуйте снова.");
+    }
+}
+
+static bool IsOfferVolumeSuitable(P2POffer offer, VolumeFilter filter)
 {
     if (offer.VolumeMin is null)
     {
         return true;
     }
 
-    return availableAmountRub >= offer.VolumeMin.Value;
+    var min = offer.VolumeMin.Value;
+    var max = offer.VolumeMax ?? offer.VolumeMin.Value;
+
+    if (min > filter.MaxRub)
+    {
+        return false;
+    }
+
+    if (filter.MinRub is null)
+    {
+        return true;
+    }
+
+    return max >= filter.MinRub.Value;
 }
 
 bool CheckAndMarkStopSignal()
@@ -856,6 +956,12 @@ file sealed class P2POffer
     public double? VolumeMin { get; init; }
     public double? VolumeMax { get; init; }
     public required string SourceLabel { get; init; }
+}
+
+file sealed class VolumeFilter
+{
+    public double? MinRub { get; init; }
+    public required double MaxRub { get; init; }
 }
 
 file sealed class DealInfo
