@@ -51,7 +51,7 @@ Console.ReadLine();
 static async Task RunInteractiveLoopAsync(IPage page, string outputDirectory)
 {
     Console.WriteLine();
-    Console.WriteLine("Команды: индекс кнопки (0..), AUTO - автосценарий P2P, R - перескан, Q - выход.");
+    Console.WriteLine("Команды: индекс кнопки (0..), A - автосценарий P2P, R - перескан, Q - выход.");
 
     while (true)
     {
@@ -71,7 +71,7 @@ static async Task RunInteractiveLoopAsync(IPage page, string outputDirectory)
             continue;
         }
 
-        if (string.Equals(input, "AUTO", StringComparison.OrdinalIgnoreCase))
+        if (string.Equals(input, "A", StringComparison.OrdinalIgnoreCase) || string.Equals(input, "AUTO", StringComparison.OrdinalIgnoreCase))
         {
             await RunP2PAutomationAsync(page, outputDirectory);
             continue;
@@ -79,7 +79,7 @@ static async Task RunInteractiveLoopAsync(IPage page, string outputDirectory)
 
         if (!int.TryParse(input, out var displayIndex))
         {
-            Console.WriteLine("Некорректный ввод. Укажите индекс, AUTO, R или Q.");
+            Console.WriteLine("Некорректный ввод. Укажите индекс, A, R или Q.");
             continue;
         }
 
@@ -253,7 +253,7 @@ static async Task<DealInfo> ExtractDealInfoAsync(IPage page)
 
   let dealMessage = '';
   for (let i = messages.length - 1; i >= 0; i--) {
-    const t = text(messages[i]);
+    const t = text(messages[i].querySelector('.bubble-content-wrapper')) || text(messages[i]);
     if (t.toLowerCase().includes('объявление')) {
       dealMessage = t;
       break;
@@ -447,7 +447,7 @@ static async Task<JsonElement> CollectMenuDataAsync(IPage page)
     ariaLabel: btn.getAttribute('aria-label') || ''
   }));
 
-  const messageAboveButtons = text(lastBubble?.querySelector('.message, .text-content, .translatable-message')) || text(lastBubble);
+  const messageAboveButtons = text(lastBubble?.querySelector('.bubble-content-wrapper')) || text(lastBubble?.querySelector('.message, .text-content, .translatable-message')) || text(lastBubble);
   const messageTime = text(lastBubble?.querySelector('time, .time, .message-time'));
   const activeChatTitle = text(document.querySelector('.chat-info .title, .chat-info-wrapper .title, .topbar .title, header .title'));
 
