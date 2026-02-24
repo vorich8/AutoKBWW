@@ -221,6 +221,10 @@ async Task RunVo8rStatusAutomationAsync(IPage page)
     stopAllRequested = false;
     Console.WriteLine("Запускаю автоматизацию VO8R: перейти в чат, отправить 'Работаю', вернуться в CryptoBot...");
 
+    Console.WriteLine("Жду 3 сек перед открытием чата VO8R...");
+    await WaitWithStopAsync(page, 3000);
+    if (stopAllRequested) return;
+
     var openedVo8r = await ClickChatByTitleAsync(page, "VO8R");
     if (!openedVo8r)
     {
@@ -228,7 +232,8 @@ async Task RunVo8rStatusAutomationAsync(IPage page)
         return;
     }
 
-    await WaitWithStopAsync(page, 1500);
+    Console.WriteLine("Жду 3 сек перед отправкой сообщения...");
+    await WaitWithStopAsync(page, 3000);
     if (stopAllRequested) return;
 
     var sent = await SendMessageToCurrentChatAsync(page, "Работаю");
@@ -238,7 +243,8 @@ async Task RunVo8rStatusAutomationAsync(IPage page)
         return;
     }
 
-    await WaitWithStopAsync(page, 1500);
+    Console.WriteLine("Жду 3 сек перед возвратом в CryptoBot...");
+    await WaitWithStopAsync(page, 3000);
     if (stopAllRequested) return;
 
     var backToBot = await ClickChatByTitleAsync(page, "Crypto");
