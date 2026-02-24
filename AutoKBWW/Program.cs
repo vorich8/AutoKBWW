@@ -123,6 +123,9 @@ async Task RunP2PAutomationAsync(IPage page)
         ? $"Фильтр объема: до {volumeFilter.MaxRub.ToString(CultureInfo.InvariantCulture)} RUB"
         : $"Фильтр объема: от {volumeFilter.MinRub.Value.ToString(CultureInfo.InvariantCulture)} до {volumeFilter.MaxRub.ToString(CultureInfo.InvariantCulture)} RUB");
 
+    var notificationUsers = ReadNotificationUsers();
+    Console.WriteLine($"Уведомления будут отправляться: {string.Join(", ", notificationUsers)}");
+
     Console.WriteLine("Запускаю автоматизацию: P2P -> Купить -> Tether (USDT) -> СБП");
     var sequence = new[] { "P2P", "Купить", "Tether (USDT)", "СБП" };
 
@@ -153,7 +156,7 @@ async Task RunP2PAutomationAsync(IPage page)
         PrintMenuToConsole(await CollectMenuDataAsync(page));
     }
 
-    var best = await FindBestOfferWithPagingAsync(page, targetPriceRub, volumeFilter);
+    var best = await FindBestOfferWithPagingAsync(page, targetPriceRub, volumeFilter, notificationUsers);
     if (best is null)
     {
         Console.WriteLine("Объявления по заданным параметрам не найдены.");
@@ -179,10 +182,10 @@ async Task RunP2PAutomationAsync(IPage page)
     var dealInfo = await ExtractDealInfoAsync(page);
     PrintDealInfo(dealInfo);
 
-    await NotifyFoundDealToVo8rAsync(page, best, dealInfo);
+    await NotifyFoundDealToUsersAsync(page, notificationUsers, best, dealInfo);
 }
 
-async Task<P2POffer?> FindBestOfferWithPagingAsync(IPage page, double targetPriceRub, VolumeFilter volumeFilter)
+async Task<P2POffer?> FindBestOfferWithPagingAsync(IPage page, double targetPriceRub, VolumeFilter volumeFilter, IReadOnlyList<string> notificationUsers)
 {
     var attempt = 0;
     var lastNoDealNotifyAt = DateTimeOffset.UtcNow;
@@ -217,7 +220,7 @@ async Task<P2POffer?> FindBestOfferWithPagingAsync(IPage page, double targetPric
 
         if (DateTimeOffset.UtcNow - lastNoDealNotifyAt >= TimeSpan.FromMinutes(5))
         {
-            await SendNoDealsNotificationAsync(page);
+            await SendNoDealsNotificationAsync(page, notificationUsers);
             if (stopAllRequested)
             {
                 Console.WriteLine("Поиск остановлен клавишей S.");
@@ -251,27 +254,30 @@ async Task<P2POffer?> FindBestOfferWithPagingAsync(IPage page, double targetPric
     }
 }
 
-async Task SendNoDealsNotificationAsync(IPage page)
+async Task SendNoDealsNotificationAsync(IPage page, IReadOnlyList<string> users)
 {
-    Console.WriteLine("5 минут без сделок. Отправляю уведомление в VO8R...");
+    Console.WriteLine($"5 минут без сделок. Отправляю уведомление пользователям: {string.Join(", ", users)}...");
 
-    await WaitWithStopAsync(page, 3000);
-    if (stopAllRequested) return;
-
-    var openedVo8r = await ClickChatByTitleAsync(page, "VO8R");
-    if (!openedVo8r)
+    foreach (var user in users)
     {
-        Console.WriteLine("Чат VO8R не найден в закрепленных.");
-        return;
-    }
+        await WaitWithStopAsync(page, 3000);
+        if (stopAllRequested) return;
 
-    await WaitWithStopAsync(page, 3000);
-    if (stopAllRequested) return;
+        var openedUser = await ClickChatByTitleAsync(page, user);
+        if (!openedUser)
+        {
+            Console.WriteLine($"Чат {user} не найден в закрепленных.");
+            continue;
+        }
 
-    var sent = await SendMessageToCurrentChatAsync(page, "Пока сделок нет. Продолжаю поиски..");
-    if (!sent)
-    {
-        Console.WriteLine("Не удалось отправить уведомление в VO8R.");
+        await WaitWithStopAsync(page, 3000);
+        if (stopAllRequested) return;
+
+        var sent = await SendMessageToCurrentChatAsync(page, "Пока сделок нет. Продолжаю поиски..");
+        if (!sent)
+        {
+            Console.WriteLine($"Не удалось отправить уведомление в {user}.");
+        }
     }
 
     await WaitWithStopAsync(page, 3000);
@@ -287,28 +293,35 @@ async Task SendNoDealsNotificationAsync(IPage page)
     await WaitWithStopAsync(page, 3000);
 }
 
-async Task NotifyFoundDealToVo8rAsync(IPage page, P2POffer best, DealInfo dealInfo)
+async Task NotifyFoundDealToUsersAsync(IPage page, IReadOnlyList<string> users, P2POffer best, DealInfo dealInfo)
 {
-    Console.WriteLine("Отправляю найденное объявление в VO8R...");
-
-    await WaitWithStopAsync(page, 3000);
-    if (stopAllRequested) return;
-
-    var openedVo8r = await ClickChatByTitleAsync(page, "VO8R");
-    if (!openedVo8r)
-    {
-        Console.WriteLine("Чат VO8R не найден в закрепленных.");
-        return;
-    }
-
-    await WaitWithStopAsync(page, 3000);
-    if (stopAllRequested) return;
+    Console.WriteLine($"Отправляю найденное объявление пользователям: {string.Join(", ", users)}...");
 
     var text = $"Найдена сделка:\n[{best.DisplayIndex}] {best.SourceLabel}\n\n{FormatDealMessage(dealInfo.MessageText)}";
-    var sent = await SendMessageToCurrentChatAsync(page, text);
-    if (!sent)
+
+
+
+
+    foreach (var user in users)
     {
-        Console.WriteLine("Не удалось отправить сообщение о найденной сделке в VO8R.");
+        await WaitWithStopAsync(page, 3000);
+        if (stopAllRequested) return;
+
+        var openedUser = await ClickChatByTitleAsync(page, user);
+        if (!openedUser)
+        {
+            Console.WriteLine($"Чат {user} не найден в закрепленных.");
+            continue;
+        }
+
+        await WaitWithStopAsync(page, 3000);
+        if (stopAllRequested) return;
+
+        var sent = await SendMessageToCurrentChatAsync(page, text);
+        if (!sent)
+        {
+            Console.WriteLine($"Не удалось отправить сообщение о найденной сделке в {user}.");
+        }
     }
 
     await WaitWithStopAsync(page, 3000);
@@ -322,6 +335,23 @@ async Task NotifyFoundDealToVo8rAsync(IPage page, P2POffer best, DealInfo dealIn
     }
 
     await WaitWithStopAsync(page, 3000);
+}
+
+IReadOnlyList<string> ReadNotificationUsers()
+{
+    Console.Write("Введите ники получателей уведомлений через запятую (Enter = VO8R, gg): ");
+    var input = Console.ReadLine();
+    var users = (input ?? string.Empty)
+        .Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries)
+        .Distinct(StringComparer.OrdinalIgnoreCase)
+        .ToList();
+
+    if (users.Count == 0)
+    {
+        users = ["VO8R", "gg"];
+    }
+
+    return users;
 }
 
 VolumeFilter ReadVolumeFilterRub()
