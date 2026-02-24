@@ -122,7 +122,25 @@ static async Task RunP2PAutomationAsync(IPage page, string outputDirectory)
 
     var result = await CollectMenuDataAsync(page);
     var offers = ParseOffers(result);
-    PrintBestOffer(offers);
+    PrintOffers(offers);
+
+    var best = offers.OrderBy(x => x.Price).FirstOrDefault();
+    if (best is null)
+    {
+        Console.WriteLine("Нет распознанных объявлений для авто-выбора.");
+        return;
+    }
+
+    Console.WriteLine($"Выбираю лучшее объявление: [{best.DisplayIndex}] {best.SourceLabel}");
+    var bestClicked = await ClickVisibleButtonByIndexAsync(page, best.DisplayIndex, isAutomation: true);
+    if (!bestClicked)
+    {
+        Console.WriteLine("Не удалось нажать лучшее объявление.");
+        return;
+    }
+
+    var dealInfo = await ExtractDealInfoAsync(page);
+    PrintDealInfo(dealInfo);
 }
 
 static List<P2POffer> ParseOffers(JsonElement menu)
@@ -172,6 +190,7 @@ static List<P2POffer> ParseOffers(JsonElement menu)
 
         result.Add(new P2POffer
         {
+            DisplayIndex = GetInt(button, "index"),
             Seller = seller,
             Price = priceValue.Value,
             RawPrice = rawPrice,
@@ -185,7 +204,7 @@ static List<P2POffer> ParseOffers(JsonElement menu)
     return result;
 }
 
-static void PrintBestOffer(List<P2POffer> offers)
+static void PrintOffers(List<P2POffer> offers)
 {
     if (offers.Count == 0)
     {
@@ -193,19 +212,69 @@ static void PrintBestOffer(List<P2POffer> offers)
         return;
     }
 
-    var best = offers.OrderBy(x => x.Price).First();
     Console.WriteLine();
-    Console.WriteLine("=== ЛУЧШЕЕ ПРЕДЛОЖЕНИЕ (минимальная цена) ===");
-    Console.WriteLine($"Продавец: {best.Seller}");
-    Console.WriteLine($"Цена: {best.RawPrice} (число: {best.Price.ToString(CultureInfo.InvariantCulture)})");
-    Console.WriteLine($"Объем: {best.Volume}");
-    if (best.VolumeMin is not null)
+    Console.WriteLine("=== ОБЪЯВЛЕНИЯ P2P (структурировано) ===");
+    foreach (var offer in offers.OrderBy(x => x.Price))
     {
-        var maxPart = best.VolumeMax is not null ? $" - {best.VolumeMax.Value.ToString(CultureInfo.InvariantCulture)}" : string.Empty;
-        Console.WriteLine($"Объем (число): {best.VolumeMin.Value.ToString(CultureInfo.InvariantCulture)}{maxPart}");
+        Console.WriteLine($"[{offer.DisplayIndex}] Продавец: {offer.Seller}");
+        Console.WriteLine($"    Цена: {offer.RawPrice} (число: {offer.Price.ToString(CultureInfo.InvariantCulture)})");
+        Console.WriteLine($"    Объем: {offer.Volume}");
     }
-    Console.WriteLine($"Сырая строка: {best.SourceLabel}");
-    Console.WriteLine("=== КОНЕЦ ===");
+
+    var best = offers.OrderBy(x => x.Price).First();
+    Console.WriteLine("--- Лучшее предложение ---");
+    Console.WriteLine($"[{best.DisplayIndex}] {best.Seller} | {best.RawPrice} | {best.Volume}");
+    Console.WriteLine("=== КОНЕЦ СПИСКА ===");
+}
+
+static void PrintDealInfo(DealInfo info)
+{
+    Console.WriteLine();
+    Console.WriteLine("=== ИНФО ПО СДЕЛКЕ ===");
+    if (string.IsNullOrWhiteSpace(info.MessageText))
+    {
+        Console.WriteLine("Сообщение сделки не найдено.");
+    }
+    else
+    {
+        Console.WriteLine(info.MessageText);
+    }
+
+    Console.WriteLine($"Кнопка действия: {info.ActionButtonLabel}");
+    Console.WriteLine("=== КОНЕЦ ИНФО ===");
+}
+
+static async Task<DealInfo> ExtractDealInfoAsync(IPage page)
+{
+    var data = await page.EvaluateAsync<DealInfo?>("""
+() => {
+  const text = (el) => (el?.textContent || '').replace(/\s+/g, ' ').trim();
+  const messages = Array.from(document.querySelectorAll('.bubble, .message'));
+
+  let dealMessage = '';
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const t = text(messages[i]);
+    if (t.toLowerCase().includes('объявление')) {
+      dealMessage = t;
+      break;
+    }
+  }
+
+  const buyButton = Array.from(document.querySelectorAll('button, [role="button"], .reply-markup-button, .Button'))
+    .find((btn) => text(btn).toLowerCase().includes('купить usdt'));
+
+  return {
+    MessageText: dealMessage,
+    ActionButtonLabel: buyButton ? text(buyButton) : '(кнопка Купить USDT не найдена)'
+  };
+}
+""");
+
+    return data ?? new DealInfo
+    {
+        MessageText = string.Empty,
+        ActionButtonLabel = "(не удалось извлечь)"
+    };
 }
 
 static double? TryParseFlexibleNumber(string source)
@@ -291,7 +360,7 @@ static async Task<bool> ClickVisibleButtonByTextAsync(IPage page, string expecte
     return true;
 }
 
-static async Task<bool> ClickVisibleButtonByIndexAsync(IPage page, int displayIndex)
+static async Task<bool> ClickVisibleButtonByIndexAsync(IPage page, int displayIndex, bool isAutomation = false)
 {
     var target = await page.EvaluateAsync<ClickTarget?>("""
 (displayIndex) => {
@@ -335,6 +404,12 @@ static async Task<bool> ClickVisibleButtonByIndexAsync(IPage page, int displayIn
     await page.Mouse.DownAsync();
     await page.Mouse.UpAsync();
     Console.WriteLine($"Нажата кнопка [{displayIndex}] '{target.Label}'.");
+
+    if (isAutomation)
+    {
+        await page.WaitForTimeoutAsync(3000);
+    }
+
     return true;
 }
 
@@ -479,6 +554,7 @@ file sealed class ClickTarget
 
 file sealed class P2POffer
 {
+    public required int DisplayIndex { get; init; }
     public required string Seller { get; init; }
     public required double Price { get; init; }
     public required string RawPrice { get; init; }
@@ -486,4 +562,10 @@ file sealed class P2POffer
     public double? VolumeMin { get; init; }
     public double? VolumeMax { get; init; }
     public required string SourceLabel { get; init; }
+}
+
+file sealed class DealInfo
+{
+    public required string MessageText { get; init; }
+    public required string ActionButtonLabel { get; init; }
 }
