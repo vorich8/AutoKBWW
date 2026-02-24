@@ -1,9 +1,7 @@
 using System.Globalization;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using Microsoft.Playwright;
-
-var outputDirectory = Path.Combine(AppContext.BaseDirectory, "output");
-Directory.CreateDirectory(outputDirectory);
 
 using var playwright = await Playwright.CreateAsync();
 
@@ -38,19 +36,15 @@ Console.ReadLine();
 
 await page.WaitForLoadStateAsync(LoadState.DOMContentLoaded, new PageWaitForLoadStateOptions { Timeout = 0 });
 
-var extractionResult = await CollectMenuDataAsync(page);
-PrintMenuToConsole(extractionResult);
-await SaveSnapshotAsync(page, extractionResult, outputDirectory);
-
-await RunInteractiveLoopAsync(page, outputDirectory);
+PrintMenuToConsole(await CollectMenuDataAsync(page));
+await RunInteractiveLoopAsync(page);
 
 Console.WriteLine();
 Console.WriteLine("Нажмите ENTER для закрытия браузера...");
 Console.ReadLine();
 
-static async Task RunInteractiveLoopAsync(IPage page, string outputDirectory)
+static async Task RunInteractiveLoopAsync(IPage page)
 {
-    Console.WriteLine();
     PrintCommandsHint();
 
     while (true)
@@ -65,16 +59,14 @@ static async Task RunInteractiveLoopAsync(IPage page, string outputDirectory)
 
         if (string.Equals(input, "R", StringComparison.OrdinalIgnoreCase))
         {
-            var refreshed = await CollectMenuDataAsync(page);
-            PrintMenuToConsole(refreshed);
-            await SaveSnapshotAsync(page, refreshed, outputDirectory);
+            PrintMenuToConsole(await CollectMenuDataAsync(page));
             PrintCommandsHint();
             continue;
         }
 
         if (string.Equals(input, "A", StringComparison.OrdinalIgnoreCase) || string.Equals(input, "AUTO", StringComparison.OrdinalIgnoreCase))
         {
-            await RunP2PAutomationAsync(page, outputDirectory);
+            await RunP2PAutomationAsync(page);
             PrintCommandsHint();
             continue;
         }
@@ -95,9 +87,7 @@ static async Task RunInteractiveLoopAsync(IPage page, string outputDirectory)
         }
 
         await page.WaitForTimeoutAsync(500);
-        var refreshedAfterClick = await CollectMenuDataAsync(page);
-        PrintMenuToConsole(refreshedAfterClick);
-        await SaveSnapshotAsync(page, refreshedAfterClick, outputDirectory);
+        PrintMenuToConsole(await CollectMenuDataAsync(page));
         PrintCommandsHint();
     }
 }
@@ -107,15 +97,17 @@ static void PrintCommandsHint()
     Console.WriteLine("Команды: индекс кнопки (0..), A - автосценарий P2P, R - перескан, Q - выход.");
 }
 
-static async Task RunP2PAutomationAsync(IPage page, string outputDirectory)
+static async Task RunP2PAutomationAsync(IPage page)
 {
-    Console.WriteLine("Запускаю автоматизацию: P2P -> Купить -> Tether (USDT) -> СБП");
+    var marketPrice = await ResolveMarketPriceAsync();
+    Console.WriteLine($"Рыночная цена USDT/RUB: {marketPrice.ToString(CultureInfo.InvariantCulture)}");
 
+    Console.WriteLine("Запускаю автоматизацию: P2P -> Купить -> Tether (USDT) -> СБП");
     var sequence = new[] { "P2P", "Купить", "Tether (USDT)", "СБП" };
 
     foreach (var expected in sequence)
     {
-        var clicked = await ClickVisibleButtonByTextAsync(page, expected);
+        var clicked = await ClickVisibleButtonByTextAsync(page, expected, startsWith: false);
         if (!clicked)
         {
             Console.WriteLine($"Автоматизация остановлена: кнопка '{expected}' не найдена.");
@@ -124,20 +116,13 @@ static async Task RunP2PAutomationAsync(IPage page, string outputDirectory)
 
         Console.WriteLine($"Авто-нажатие: '{expected}' выполнено. Жду 3 сек...");
         await page.WaitForTimeoutAsync(3000);
-
-        var stepScan = await CollectMenuDataAsync(page);
-        PrintMenuToConsole(stepScan);
-        await SaveSnapshotAsync(page, stepScan, outputDirectory);
+        PrintMenuToConsole(await CollectMenuDataAsync(page));
     }
 
-    var result = await CollectMenuDataAsync(page);
-    var offers = ParseOffers(result);
-    PrintOffers(offers);
-
-    var best = offers.OrderBy(x => x.Price).FirstOrDefault();
+    var best = await FindBestOfferWithPagingAsync(page, marketPrice);
     if (best is null)
     {
-        Console.WriteLine("Нет распознанных объявлений для авто-выбора.");
+        Console.WriteLine("Объявления с ценой <= рыночной не найдены.");
         return;
     }
 
@@ -149,14 +134,114 @@ static async Task RunP2PAutomationAsync(IPage page, string outputDirectory)
         return;
     }
 
-    var dealInfo = await ExtractDealInfoAsync(page);
-    PrintDealInfo(dealInfo);
+    PrintDealInfo(await ExtractDealInfoAsync(page));
+}
+
+static async Task<P2POffer?> FindBestOfferWithPagingAsync(IPage page, double marketPrice)
+{
+    for (var attempt = 1; attempt <= 30; attempt++)
+    {
+        var menu = await CollectMenuDataAsync(page);
+        var offers = ParseOffers(menu);
+
+        Console.WriteLine($"Скан страницы #{attempt}");
+        PrintOffers(offers);
+
+        var eligible = offers.Where(x => x.Price <= marketPrice).OrderBy(x => x.Price).ToList();
+        if (eligible.Count > 0)
+        {
+            var best = eligible.First();
+            Console.WriteLine($"Найдено предложение <= рынка: {best.RawPrice} ({best.Seller})");
+            return best;
+        }
+
+        Console.WriteLine("Подходящих объявлений нет. Жду 5 сек и нажимаю кнопку '· 1 ·' для следующего скана...");
+        await page.WaitForTimeoutAsync(5000);
+
+        var pagerClicked = await ClickVisibleButtonByTextAsync(page, "· 1 ·", startsWith: false, containsOnly: true);
+        if (!pagerClicked)
+        {
+            Console.WriteLine("Кнопка '· 1 ·' не найдена. Останавливаю поиск.");
+            return null;
+        }
+
+        await page.WaitForTimeoutAsync(5000);
+    }
+
+    return null;
+}
+
+static async Task<double> ResolveMarketPriceAsync()
+{
+    var market = await TryGetMarketPriceRubAsync();
+    if (market is not null)
+    {
+        Console.WriteLine($"Получил рыночную цену с CoinMarketCap: {market.Value.ToString(CultureInfo.InvariantCulture)}");
+        return market.Value;
+    }
+
+    while (true)
+    {
+        Console.Write("Не удалось получить цену с сайта. Введите рыночную цену USDT/RUB вручную: ");
+        var input = Console.ReadLine();
+        if (double.TryParse((input ?? string.Empty).Replace(',', '.'), NumberStyles.Any, CultureInfo.InvariantCulture, out var manual) && manual > 0)
+        {
+            return manual;
+        }
+
+        Console.WriteLine("Некорректная цена, попробуйте снова.");
+    }
+}
+
+static async Task<double?> TryGetMarketPriceRubAsync()
+{
+    try
+    {
+        using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(20) };
+        http.DefaultRequestHeaders.UserAgent.ParseAdd("Mozilla/5.0");
+
+        var html = await http.GetStringAsync("https://coinmarketcap.com/currencies/tether/usdt/rub/");
+
+        var patterns = new[]
+        {
+            @"price today is[^0-9]{0,40}([0-9]+(?:[\.,][0-9]+)?)",
+            "price\\s*:\\s*([0-9]+(?:\\.[0-9]+)?)"
+        };
+
+        foreach (var pattern in patterns)
+        {
+            var matches = Regex.Matches(html, pattern, RegexOptions.IgnoreCase);
+            foreach (Match m in matches)
+            {
+                if (m.Groups.Count < 2)
+                {
+                    continue;
+                }
+
+                var raw = m.Groups[1].Value.Replace(',', '.');
+                if (!double.TryParse(raw, NumberStyles.Any, CultureInfo.InvariantCulture, out var value))
+                {
+                    continue;
+                }
+
+                if (value is > 10 and < 200)
+                {
+                    return value;
+                }
+            }
+        }
+    }
+    catch
+    {
+        // fallback below
+    }
+
+    return null;
 }
 
 static List<P2POffer> ParseOffers(JsonElement menu)
 {
     var result = new List<P2POffer>();
-
     if (!menu.TryGetProperty("visibleButtons", out var buttons) || buttons.ValueKind != JsonValueKind.Array)
     {
         return result;
@@ -181,14 +266,12 @@ static List<P2POffer> ParseOffers(JsonElement menu)
 
         if (parts.Length == 2)
         {
-            // Формат без ника: "79.8₽ · 16.75K"
             seller = "(не указан)";
             rawPrice = parts[0];
             rawVolume = parts[1];
         }
         else
         {
-            // Формат с ником: "Seller · 79.9₽ · 9.35K" либо "Seller · 80₽ · 7K - 7.50K"
             seller = parts[0];
             rawPrice = parts[1];
             rawVolume = string.Join(" · ", parts.Skip(2));
@@ -226,7 +309,6 @@ static void PrintOffers(List<P2POffer> offers)
         return;
     }
 
-    Console.WriteLine();
     Console.WriteLine("=== ОБЪЯВЛЕНИЯ P2P (структурировано) ===");
     foreach (var offer in offers.OrderBy(x => x.Price))
     {
@@ -235,9 +317,6 @@ static void PrintOffers(List<P2POffer> offers)
         Console.WriteLine($"    Объем: {offer.Volume}");
     }
 
-    var best = offers.OrderBy(x => x.Price).First();
-    Console.WriteLine("--- Лучшее предложение ---");
-    Console.WriteLine($"[{best.DisplayIndex}] {best.Seller} | {best.RawPrice} | {best.Volume}");
     Console.WriteLine("=== КОНЕЦ СПИСКА ===");
 }
 
@@ -245,15 +324,7 @@ static void PrintDealInfo(DealInfo info)
 {
     Console.WriteLine();
     Console.WriteLine("=== ИНФО ПО СДЕЛКЕ ===");
-    if (string.IsNullOrWhiteSpace(info.MessageText))
-    {
-        Console.WriteLine("Сообщение сделки не найдено.");
-    }
-    else
-    {
-        Console.WriteLine(FormatDealMessage(info.MessageText));
-    }
-
+    Console.WriteLine(string.IsNullOrWhiteSpace(info.MessageText) ? "Сообщение сделки не найдено." : FormatDealMessage(info.MessageText));
     Console.WriteLine($"Кнопка действия: {info.ActionButtonLabel}");
     Console.WriteLine("=== КОНЕЦ ИНФО ===");
 }
@@ -276,20 +347,16 @@ static async Task<DealInfo> ExtractDealInfoAsync(IPage page)
   }
 
   const buyButton = Array.from(document.querySelectorAll('button, [role="button"], .reply-markup-button, .Button'))
-    .find((btn) => text(btn).toLowerCase().includes('купить usdt'));
+    .find((btn) => text(btn).toLowerCase().startsWith('купить'));
 
   return {
     MessageText: dealMessage,
-    ActionButtonLabel: buyButton ? text(buyButton) : '(кнопка Купить USDT не найдена)'
+    ActionButtonLabel: buyButton ? text(buyButton) : '(кнопка Купить* не найдена)'
   };
 }
 """);
 
-    return data ?? new DealInfo
-    {
-        MessageText = string.Empty,
-        ActionButtonLabel = "(не удалось извлечь)"
-    };
+    return data ?? new DealInfo { MessageText = string.Empty, ActionButtonLabel = "(не удалось извлечь)" };
 }
 
 static string FormatDealMessage(string message)
@@ -315,33 +382,21 @@ static string FormatDealMessage(string message)
 
 static double? TryParseFlexibleNumber(string source)
 {
-    if (string.IsNullOrWhiteSpace(source))
-    {
-        return null;
-    }
+    if (string.IsNullOrWhiteSpace(source)) return null;
 
     var hasK = source.Contains('K', StringComparison.OrdinalIgnoreCase);
     var filtered = new string(source.Where(ch => char.IsDigit(ch) || ch == '.' || ch == ',').ToArray());
-    if (string.IsNullOrWhiteSpace(filtered))
-    {
-        return null;
-    }
+    if (string.IsNullOrWhiteSpace(filtered)) return null;
 
     filtered = filtered.Replace(',', '.');
-    if (!double.TryParse(filtered, NumberStyles.Any, CultureInfo.InvariantCulture, out var value))
-    {
-        return null;
-    }
+    if (!double.TryParse(filtered, NumberStyles.Any, CultureInfo.InvariantCulture, out var value)) return null;
 
     return hasK ? value * 1000d : value;
 }
 
 static (double? Min, double? Max) TryParseVolumeRange(string rawVolume)
 {
-    if (string.IsNullOrWhiteSpace(rawVolume))
-    {
-        return (null, null);
-    }
+    if (string.IsNullOrWhiteSpace(rawVolume)) return (null, null);
 
     var parts = rawVolume.Split('-', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries);
     if (parts.Length == 1)
@@ -350,46 +405,38 @@ static (double? Min, double? Max) TryParseVolumeRange(string rawVolume)
         return (single, single);
     }
 
-    var min = TryParseFlexibleNumber(parts[0]);
-    var max = TryParseFlexibleNumber(parts[1]);
-    return (min, max);
+    return (TryParseFlexibleNumber(parts[0]), TryParseFlexibleNumber(parts[1]));
 }
 
-static async Task<bool> ClickVisibleButtonByTextAsync(IPage page, string expectedText)
+static async Task<bool> ClickVisibleButtonByTextAsync(IPage page, string expectedText, bool startsWith, bool containsOnly = false)
 {
     var target = await page.EvaluateAsync<ClickTarget?>("""
-(expectedText) => {
+(args) => {
   const normalize = (s) => (s || '').replace(/\s+/g, ' ').trim().toLowerCase();
   const text = (el) => (el?.textContent || '').replace(/\s+/g, ' ').trim();
-  const blockText = (el) => (el?.innerText || el?.textContent || '').replace(/\r/g, '').trim();
 
   const allVisibleButtons = Array.from(document.querySelectorAll('button, [role="button"], .reply-markup-button, .Button'))
     .filter((btn) => {
       const rect = btn.getBoundingClientRect();
       const style = getComputedStyle(btn);
-      const visible = rect.width > 0 && rect.height > 0 && style.visibility !== 'hidden' && style.display !== 'none';
-      if (!visible) return false;
-      const t = text(btn);
-      return t.length > 0 || (btn.getAttribute('aria-label') || '').trim().length > 0;
+      return rect.width > 0 && rect.height > 0 && style.visibility !== 'hidden' && style.display !== 'none';
     });
 
-  const expected = normalize(expectedText);
-  const hit = allVisibleButtons.find((btn) => normalize(text(btn)).includes(expected));
+  const expected = normalize(args.expectedText);
+  const hit = allVisibleButtons.find((btn) => {
+    const t = normalize(text(btn));
+    if (args.containsOnly) return t.includes(expected);
+    if (args.startsWith) return t.startsWith(expected);
+    return t.includes(expected);
+  });
+
   if (!hit) return null;
-
   const rect = hit.getBoundingClientRect();
-  return {
-    x: rect.left + rect.width / 2,
-    y: rect.top + rect.height / 2,
-    label: text(hit)
-  };
+  return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2, label: text(hit) };
 }
-""", expectedText);
+""", new { expectedText, startsWith, containsOnly });
 
-    if (target is null)
-    {
-        return false;
-    }
+    if (target is null) return false;
 
     await page.Mouse.MoveAsync((float)target.X, (float)target.Y);
     await page.Mouse.DownAsync();
@@ -402,9 +449,8 @@ static async Task<bool> ClickVisibleButtonByIndexAsync(IPage page, int displayIn
     var target = await page.EvaluateAsync<ClickTarget?>("""
 (displayIndex) => {
   const text = (el) => (el?.textContent || '').replace(/\s+/g, ' ').trim();
-  const blockText = (el) => (el?.innerText || el?.textContent || '').replace(/\r/g, '').trim();
   const allVisibleButtons = Array.from(document.querySelectorAll('button, [role="button"], .reply-markup-button, .Button'))
-    .map((btn, domIndex) => ({ btn, domIndex }))
+    .map((btn) => ({ btn }))
     .filter(({ btn }) => {
       const rect = btn.getBoundingClientRect();
       const style = getComputedStyle(btn);
@@ -425,18 +471,11 @@ static async Task<bool> ClickVisibleButtonByIndexAsync(IPage page, int displayIn
   if (!chosen) return null;
 
   const rect = chosen.btn.getBoundingClientRect();
-  return {
-    x: rect.left + rect.width / 2,
-    y: rect.top + rect.height / 2,
-    label: text(chosen.btn)
-  };
+  return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2, label: text(chosen.btn) };
 }
 """, displayIndex);
 
-    if (target is null)
-    {
-        return false;
-    }
+    if (target is null) return false;
 
     await page.Mouse.MoveAsync((float)target.X, (float)target.Y);
     await page.Mouse.DownAsync();
@@ -486,7 +525,7 @@ static async Task<JsonElement> CollectMenuDataAsync(IPage page)
     ariaLabel: btn.getAttribute('aria-label') || ''
   }));
 
-  const messageAboveButtons = text(lastBubble?.querySelector('.bubble-content-wrapper')) || text(lastBubble?.querySelector('.message, .text-content, .translatable-message')) || text(lastBubble);
+  const messageAboveButtons = blockText(lastBubble?.querySelector('.bubble-content-wrapper')) || blockText(lastBubble);
   const messageTime = text(lastBubble?.querySelector('time, .time, .message-time'));
   const activeChatTitle = text(document.querySelector('.chat-info .title, .chat-info-wrapper .title, .topbar .title, header .title'));
 
@@ -495,7 +534,6 @@ static async Task<JsonElement> CollectMenuDataAsync(IPage page)
     activeChatTitle,
     messageAboveButtons,
     messageTime,
-    totalVisibleButtonCount: allVisibleButtons.length,
     visibleButtonCount: visibleButtons.length,
     visibleButtons
   };
@@ -517,30 +555,11 @@ static void PrintMenuToConsole(JsonElement result)
     {
         foreach (var button in buttons.EnumerateArray())
         {
-            var index = GetInt(button, "index");
-            var label = GetString(button, "label");
-            var aria = GetString(button, "ariaLabel");
-            Console.WriteLine($"  [{index}] label='{label}', aria='{aria}'");
+            Console.WriteLine($"  [{GetInt(button, "index")}] label='{GetString(button, "label")}', aria='{GetString(button, "ariaLabel")}'");
         }
     }
 
     Console.WriteLine("=== КОНЕЦ МЕНЮ ===");
-}
-
-static async Task SaveSnapshotAsync(IPage page, JsonElement result, string outputDirectory)
-{
-    var options = new JsonSerializerOptions { WriteIndented = true };
-    var json = JsonSerializer.Serialize(result, options);
-    var timestamp = DateTimeOffset.Now.ToString("yyyyMMdd_HHmmss");
-
-    var jsonPath = Path.Combine(outputDirectory, $"cryptobot_menu_{timestamp}.json");
-    var htmlPath = Path.Combine(outputDirectory, $"telegram_snapshot_{timestamp}.html");
-
-    await File.WriteAllTextAsync(jsonPath, json);
-    await File.WriteAllTextAsync(htmlPath, await page.ContentAsync());
-
-    Console.WriteLine($"JSON: {jsonPath}");
-    Console.WriteLine($"HTML snapshot: {htmlPath}");
 }
 
 static int GetInt(JsonElement source, string propertyName)
