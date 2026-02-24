@@ -6,11 +6,23 @@ Directory.CreateDirectory(outputDirectory);
 
 using var playwright = await Playwright.CreateAsync();
 
-var cdpUrl = Environment.GetEnvironmentVariable("TELEGRAM_CDP_URL");
-await using var browser = await OpenBrowserAsync(playwright, cdpUrl);
-var context = await GetWorkingContextAsync(browser, cdpUrl);
-var page = await context.NewPageAsync();
+var yandexBrowserPath = ResolveYandexBrowserPath();
+var userDataDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "AutoKBWW", "PlaywrightProfile");
+Directory.CreateDirectory(userDataDir);
 
+Console.WriteLine($"Использую Яндекс Браузер: {yandexBrowserPath}");
+Console.WriteLine($"Профиль сессии: {userDataDir}");
+
+await using var context = await playwright.Chromium.LaunchPersistentContextAsync(userDataDir, new BrowserTypeLaunchPersistentContextOptions
+{
+    Headless = false,
+    SlowMo = 60,
+    ExecutablePath = yandexBrowserPath,
+    Args = ["--start-maximized"],
+    ViewportSize = new ViewportSize { Width = 1440, Height = 900 }
+});
+
+var page = context.Pages.FirstOrDefault() ?? await context.NewPageAsync();
 await page.GotoAsync("https://web.telegram.org/k/", new PageGotoOptions
 {
     WaitUntil = WaitUntilState.DOMContentLoaded,
@@ -18,8 +30,8 @@ await page.GotoAsync("https://web.telegram.org/k/", new PageGotoOptions
 });
 
 Console.WriteLine("Telegram Web открыт.");
-Console.WriteLine("1) Войдите в аккаунт вручную.");
-Console.WriteLine("2) Откройте CryptoBot.");
+Console.WriteLine("1) Если сессия сохранилась — просто откройте CryptoBot.");
+Console.WriteLine("2) Если попросило логин — войдите вручную (сессия сохранится в профиль).");
 Console.WriteLine("3) Нажмите ENTER, когда меню бота открыто.");
 Console.ReadLine();
 
@@ -43,26 +55,28 @@ static async Task<JsonElement> CollectMenuDataAsync(IPage page)
 
   const bubbles = Array.from(document.querySelectorAll('.bubble, .message'));
   const lastBubble = bubbles.at(-1) || null;
-  const menuButtons = Array.from(document.querySelectorAll('button, [role="button"], .reply-markup-button, .Button'))
-    .filter((btn) => {
+
+  const allVisibleButtons = Array.from(document.querySelectorAll('button, [role="button"], .reply-markup-button, .Button'))
+    .map((btn, domIndex) => ({ btn, domIndex }))
+    .filter(({ btn }) => {
       const rect = btn.getBoundingClientRect();
       const style = getComputedStyle(btn);
       const visible = rect.width > 0 && rect.height > 0 && style.visibility !== 'hidden' && style.display !== 'none';
       if (!visible) return false;
       const t = text(btn);
       return t.length > 0 || (btn.getAttribute('aria-label') || '').trim().length > 0;
-    })
-    .map((btn, index) => ({
-      index,
-      label: text(btn),
-      ariaLabel: btn.getAttribute('aria-label') || ''
-    }));
+    });
 
-  // Пытаемся взять текст сообщения, к которому относится текущее меню кнопок.
-  // Обычно это последнее сообщение в открытом чате (над reply клавиатурой).
+  const last30 = allVisibleButtons.slice(-30);
+  const visibleButtons = last30.map(({ btn, domIndex }, displayIndex) => ({
+    index: displayIndex,
+    domIndex,
+    label: text(btn),
+    ariaLabel: btn.getAttribute('aria-label') || ''
+  }));
+
   const messageAboveButtons = text(lastBubble?.querySelector('.message, .text-content, .translatable-message')) || text(lastBubble);
   const messageTime = text(lastBubble?.querySelector('time, .time, .message-time'));
-
   const activeChatTitle = text(document.querySelector('.chat-info .title, .chat-info-wrapper .title, .topbar .title, header .title'));
 
   return {
@@ -70,8 +84,9 @@ static async Task<JsonElement> CollectMenuDataAsync(IPage page)
     activeChatTitle,
     messageAboveButtons,
     messageTime,
-    visibleButtonCount: menuButtons.length,
-    visibleButtons: menuButtons
+    totalVisibleButtonCount: allVisibleButtons.length,
+    visibleButtonCount: visibleButtons.length,
+    visibleButtons
   };
 }
 """);
@@ -85,7 +100,8 @@ static void PrintMenuToConsole(JsonElement result)
     Console.WriteLine($"Время скана: {GetString(result, "extractedAt")}");
     Console.WriteLine($"Текст над кнопками: {GetString(result, "messageAboveButtons")}");
     Console.WriteLine($"Время сообщения: {GetString(result, "messageTime")}");
-    Console.WriteLine($"Кнопок найдено: {GetInt(result, "visibleButtonCount")}");
+    Console.WriteLine($"Показано кнопок (последние): {GetInt(result, "visibleButtonCount")}");
+    Console.WriteLine($"Всего видимых кнопок на странице: {GetInt(result, "totalVisibleButtonCount")}");
 
     if (result.TryGetProperty("visibleButtons", out var buttons) && buttons.ValueKind == JsonValueKind.Array)
     {
@@ -120,9 +136,7 @@ static async Task SaveSnapshotAsync(IPage page, JsonElement result, string outpu
 static async Task RunInteractiveButtonClickLoopAsync(IPage page, string outputDirectory)
 {
     Console.WriteLine();
-    Console.WriteLine("Введите индекс кнопки для нажатия.");
-    Console.WriteLine("После каждого нажатия скрипт автоматически пересканирует меню.");
-    Console.WriteLine("Введите Q для выхода.");
+    Console.WriteLine("Введите индекс кнопки для нажатия (из последних 30). Q — выход.");
 
     while (true)
     {
@@ -134,17 +148,18 @@ static async Task RunInteractiveButtonClickLoopAsync(IPage page, string outputDi
             break;
         }
 
-        if (!int.TryParse(input, out var buttonIndex))
+        if (!int.TryParse(input, out var displayIndex))
         {
             Console.WriteLine("Некорректный ввод. Укажите индекс кнопки или Q.");
             continue;
         }
 
         var target = await page.EvaluateAsync<ClickTarget?>("""
-(index) => {
+(displayIndex) => {
   const text = (el) => (el?.textContent || '').replace(/\s+/g, ' ').trim();
-  const visibleButtons = Array.from(document.querySelectorAll('button, [role="button"], .reply-markup-button, .Button'))
-    .filter((btn) => {
+  const allVisibleButtons = Array.from(document.querySelectorAll('button, [role="button"], .reply-markup-button, .Button'))
+    .map((btn, domIndex) => ({ btn, domIndex }))
+    .filter(({ btn }) => {
       const rect = btn.getBoundingClientRect();
       const style = getComputedStyle(btn);
       const visible = rect.width > 0 && rect.height > 0 && style.visibility !== 'hidden' && style.display !== 'none';
@@ -153,28 +168,29 @@ static async Task RunInteractiveButtonClickLoopAsync(IPage page, string outputDi
       return t.length > 0 || (btn.getAttribute('aria-label') || '').trim().length > 0;
     });
 
-  const target = visibleButtons[index];
-  if (!target) return null;
+  const last30 = allVisibleButtons.slice(-30);
+  const chosen = last30[displayIndex];
+  if (!chosen) return null;
 
-  const rect = target.getBoundingClientRect();
+  const rect = chosen.btn.getBoundingClientRect();
   return {
     x: rect.left + rect.width / 2,
     y: rect.top + rect.height / 2,
-    label: text(target)
+    label: text(chosen.btn)
   };
 }
-""", buttonIndex);
+""", displayIndex);
 
         if (target is null)
         {
-            Console.WriteLine($"Кнопка с индексом {buttonIndex} не найдена среди видимых.");
+            Console.WriteLine($"Кнопка с индексом {displayIndex} не найдена в последних 30.");
             continue;
         }
 
         await page.Mouse.MoveAsync((float)target.X, (float)target.Y);
         await page.Mouse.DownAsync();
         await page.Mouse.UpAsync();
-        Console.WriteLine($"Нажата кнопка [{buttonIndex}] '{target.Label}'.");
+        Console.WriteLine($"Нажата кнопка [{displayIndex}] '{target.Label}'.");
 
         await page.WaitForTimeoutAsync(500);
         var refreshed = await CollectMenuDataAsync(page);
@@ -195,45 +211,6 @@ static string GetString(JsonElement source, string propertyName)
     return source.TryGetProperty(propertyName, out var value) && value.ValueKind == JsonValueKind.String
         ? value.GetString() ?? string.Empty
         : string.Empty;
-}
-
-static async Task<IBrowser> OpenBrowserAsync(IPlaywright playwright, string? cdpUrl)
-{
-    if (!string.IsNullOrWhiteSpace(cdpUrl))
-    {
-        Console.WriteLine($"Подключаюсь к уже открытому браузеру по CDP: {cdpUrl}");
-        return await playwright.Chromium.ConnectOverCDPAsync(cdpUrl);
-    }
-
-    Console.WriteLine("TELEGRAM_CDP_URL не задан. Запускаю отдельный экземпляр Яндекс Браузера.");
-    var yandexBrowserPath = ResolveYandexBrowserPath();
-    Console.WriteLine($"Использую browser executable: {yandexBrowserPath}");
-
-    return await playwright.Chromium.LaunchAsync(new BrowserTypeLaunchOptions
-    {
-        Headless = false,
-        SlowMo = 60,
-        ExecutablePath = yandexBrowserPath,
-        Args = ["--start-maximized"]
-    });
-}
-
-static async Task<IBrowserContext> GetWorkingContextAsync(IBrowser browser, string? cdpUrl)
-{
-    if (!string.IsNullOrWhiteSpace(cdpUrl))
-    {
-        var existing = browser.Contexts.FirstOrDefault();
-        if (existing is not null)
-        {
-            Console.WriteLine("Использую существующий контекст браузера (не инкогнито).");
-            return existing;
-        }
-    }
-
-    return await browser.NewContextAsync(new BrowserNewContextOptions
-    {
-        ViewportSize = new ViewportSize { Width = 1440, Height = 900 }
-    });
 }
 
 static string ResolveYandexBrowserPath()
