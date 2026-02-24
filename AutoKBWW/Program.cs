@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Text.Json;
 using Microsoft.Playwright;
 
@@ -7,11 +8,7 @@ Directory.CreateDirectory(outputDirectory);
 using var playwright = await Playwright.CreateAsync();
 
 Console.WriteLine("Запускаю браузер...");
-await using var browser = await playwright.Chromium.LaunchAsync(new BrowserTypeLaunchOptions
-{
-    Headless = false,
-    SlowMo = 80
-});
+await using var browser = await LaunchChromiumWithAutoInstallAsync(playwright);
 
 var context = await browser.NewContextAsync(new BrowserNewContextOptions
 {
@@ -96,3 +93,98 @@ Console.WriteLine($"HTML snapshot: {htmlPath}");
 Console.WriteLine();
 Console.WriteLine("Нажмите ENTER для закрытия браузера...");
 Console.ReadLine();
+
+static async Task<IBrowser> LaunchChromiumWithAutoInstallAsync(IPlaywright playwright)
+{
+    var launchOptions = new BrowserTypeLaunchOptions
+    {
+        Headless = false,
+        SlowMo = 80
+    };
+
+    try
+    {
+        return await playwright.Chromium.LaunchAsync(launchOptions);
+    }
+    catch (PlaywrightException ex) when (IsMissingBrowserExecutable(ex))
+    {
+        Console.WriteLine("Chromium для Playwright не найден. Пытаюсь установить автоматически...");
+
+        var installExitCode = await InstallChromiumAsync();
+        if (installExitCode != 0)
+        {
+            throw new InvalidOperationException(
+                $"Не удалось установить Chromium для Playwright (код выхода: {installExitCode}). " +
+                "Запустите вручную: playwright install chromium", ex);
+        }
+
+        Console.WriteLine("Установка Chromium завершена. Повторный запуск браузера...");
+        return await playwright.Chromium.LaunchAsync(launchOptions);
+    }
+}
+
+static bool IsMissingBrowserExecutable(PlaywrightException ex)
+{
+    return ex.Message.Contains("Executable doesn't exist", StringComparison.OrdinalIgnoreCase);
+}
+
+static async Task<int> InstallChromiumAsync()
+{
+    var runner = ResolvePlaywrightInstallCommand();
+
+    var startInfo = new ProcessStartInfo
+    {
+        FileName = runner.FileName,
+        Arguments = runner.Arguments,
+        RedirectStandardOutput = true,
+        RedirectStandardError = true,
+        UseShellExecute = false,
+        CreateNoWindow = true
+    };
+
+    using var process = new Process { StartInfo = startInfo };
+    process.OutputDataReceived += (_, args) =>
+    {
+        if (!string.IsNullOrWhiteSpace(args.Data))
+        {
+            Console.WriteLine(args.Data);
+        }
+    };
+    process.ErrorDataReceived += (_, args) =>
+    {
+        if (!string.IsNullOrWhiteSpace(args.Data))
+        {
+            Console.Error.WriteLine(args.Data);
+        }
+    };
+
+    process.Start();
+    process.BeginOutputReadLine();
+    process.BeginErrorReadLine();
+    await process.WaitForExitAsync();
+
+    return process.ExitCode;
+}
+
+static (string FileName, string Arguments) ResolvePlaywrightInstallCommand()
+{
+    if (OperatingSystem.IsWindows())
+    {
+        var localCmd = Path.Combine(AppContext.BaseDirectory, "playwright.cmd");
+        if (File.Exists(localCmd))
+        {
+            return (localCmd, "install chromium");
+        }
+
+        return ("playwright.cmd", "install chromium");
+    }
+
+    var localSh = Path.Combine(AppContext.BaseDirectory, "playwright.sh");
+    if (File.Exists(localSh))
+    {
+        return ("bash", $"\"{localSh}\" install chromium");
+    }
+
+    return ("playwright", "install chromium");
+}
+
