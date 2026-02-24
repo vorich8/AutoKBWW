@@ -76,13 +76,6 @@ async Task RunInteractiveLoopAsync(IPage page)
             continue;
         }
 
-        if (string.Equals(input, "V", StringComparison.OrdinalIgnoreCase))
-        {
-            await RunVo8rStatusAutomationAsync(page);
-            PrintCommandsHint();
-            continue;
-        }
-
         if (string.Equals(input, "A", StringComparison.OrdinalIgnoreCase) || string.Equals(input, "AUTO", StringComparison.OrdinalIgnoreCase))
         {
             await RunP2PAutomationAsync(page);
@@ -92,7 +85,7 @@ async Task RunInteractiveLoopAsync(IPage page)
 
         if (!int.TryParse(input, out var displayIndex))
         {
-            Console.WriteLine("Некорректный ввод. Укажите индекс, A, V, R, S или Q.");
+            Console.WriteLine("Некорректный ввод. Укажите индекс, A, R, S или Q.");
             PrintCommandsHint();
             continue;
         }
@@ -113,7 +106,7 @@ async Task RunInteractiveLoopAsync(IPage page)
 
 static void PrintCommandsHint()
 {
-    Console.WriteLine("Команды: индекс кнопки (0..), A - автосценарий P2P, V - VO8R статус, R - перескан, S - стоп автоматики, Q - выход.");
+    Console.WriteLine("Команды: индекс кнопки (0..), A - автосценарий P2P, R - перескан, S - стоп автоматики, Q - выход.");
 }
 
 async Task RunP2PAutomationAsync(IPage page)
@@ -124,6 +117,9 @@ async Task RunP2PAutomationAsync(IPage page)
         getCached: () => (cachedMarketPriceRub, cachedMarketPriceAt),
         setCached: value => { cachedMarketPriceRub = value.Price; cachedMarketPriceAt = value.At; });
     Console.WriteLine($"Рыночная цена USDT/RUB: {marketPrice.ToString(CultureInfo.InvariantCulture)}");
+
+    var availableAmountRub = ReadAvailableAmountRub();
+    Console.WriteLine($"Доступный бюджет: {availableAmountRub.ToString(CultureInfo.InvariantCulture)} RUB");
 
     Console.WriteLine("Запускаю автоматизацию: P2P -> Купить -> Tether (USDT) -> СБП");
     var sequence = new[] { "P2P", "Купить", "Tether (USDT)", "СБП" };
@@ -147,7 +143,7 @@ async Task RunP2PAutomationAsync(IPage page)
         PrintMenuToConsole(await CollectMenuDataAsync(page));
     }
 
-    var best = await FindBestOfferWithPagingAsync(page, marketPrice);
+    var best = await FindBestOfferWithPagingAsync(page, marketPrice, availableAmountRub);
     if (best is null)
     {
         Console.WriteLine("Объявления с ценой <= рыночной не найдены.");
@@ -165,9 +161,11 @@ async Task RunP2PAutomationAsync(IPage page)
     PrintDealInfo(await ExtractDealInfoAsync(page));
 }
 
-async Task<P2POffer?> FindBestOfferWithPagingAsync(IPage page, double marketPrice)
+async Task<P2POffer?> FindBestOfferWithPagingAsync(IPage page, double marketPrice, double availableAmountRub)
 {
     var attempt = 0;
+    var lastNoDealNotifyAt = DateTimeOffset.UtcNow;
+
     while (true)
     {
         attempt++;
@@ -184,12 +182,28 @@ async Task<P2POffer?> FindBestOfferWithPagingAsync(IPage page, double marketPric
         Console.WriteLine($"Скан страницы #{attempt}");
         PrintOffers(offers);
 
-        var eligible = offers.Where(x => x.Price <= marketPrice).OrderBy(x => x.Price).ToList();
+        var eligible = offers
+            .Where(x => x.Price <= marketPrice)
+            .Where(x => IsOfferVolumeSuitable(x, availableAmountRub))
+            .OrderBy(x => x.Price)
+            .ToList();
         if (eligible.Count > 0)
         {
             var best = eligible.First();
             Console.WriteLine($"Найдено предложение <= рынка: {best.RawPrice} ({best.Seller})");
             return best;
+        }
+
+        if (DateTimeOffset.UtcNow - lastNoDealNotifyAt >= TimeSpan.FromMinutes(5))
+        {
+            await SendNoDealsNotificationAsync(page);
+            if (stopAllRequested)
+            {
+                Console.WriteLine("Поиск остановлен клавишей S.");
+                return null;
+            }
+
+            lastNoDealNotifyAt = DateTimeOffset.UtcNow;
         }
 
         Console.WriteLine("Подходящих объявлений нет. Жду 5 сек и нажимаю кнопку '· 1 ·' для следующего скана...");
@@ -216,12 +230,10 @@ async Task<P2POffer?> FindBestOfferWithPagingAsync(IPage page, double marketPric
     }
 }
 
-async Task RunVo8rStatusAutomationAsync(IPage page)
+async Task SendNoDealsNotificationAsync(IPage page)
 {
-    stopAllRequested = false;
-    Console.WriteLine("Запускаю автоматизацию VO8R: перейти в чат, отправить 'Работаю', вернуться в CryptoBot...");
+    Console.WriteLine("5 минут без сделок. Отправляю уведомление в VO8R...");
 
-    Console.WriteLine("Жду 3 сек перед открытием чата VO8R...");
     await WaitWithStopAsync(page, 3000);
     if (stopAllRequested) return;
 
@@ -232,25 +244,51 @@ async Task RunVo8rStatusAutomationAsync(IPage page)
         return;
     }
 
-    Console.WriteLine("Жду 3 сек перед отправкой сообщения...");
     await WaitWithStopAsync(page, 3000);
     if (stopAllRequested) return;
 
-    var sent = await SendMessageToCurrentChatAsync(page, "Работаю");
+    var sent = await SendMessageToCurrentChatAsync(page, "Пока сделок нет. Продолжаю поиски..");
     if (!sent)
     {
-        Console.WriteLine("Не удалось отправить сообщение в чат VO8R.");
-        return;
+        Console.WriteLine("Не удалось отправить уведомление в VO8R.");
     }
 
-    Console.WriteLine("Жду 3 сек перед возвратом в CryptoBot...");
     await WaitWithStopAsync(page, 3000);
     if (stopAllRequested) return;
 
     var backToBot = await ClickChatByTitleAsync(page, "Crypto");
-    Console.WriteLine(backToBot
-        ? "Возврат в чат CryptoBot выполнен."
-        : "Не удалось найти чат CryptoBot в закрепленных.");
+    if (!backToBot)
+    {
+        Console.WriteLine("Не удалось вернуться в чат CryptoBot.");
+        return;
+    }
+
+    await WaitWithStopAsync(page, 3000);
+}
+
+double ReadAvailableAmountRub()
+{
+    while (true)
+    {
+        Console.Write("Введите доступный объем сделки в RUB для AUTO P2P: ");
+        var input = Console.ReadLine();
+        if (double.TryParse((input ?? string.Empty).Replace(',', '.'), NumberStyles.Any, CultureInfo.InvariantCulture, out var amount) && amount > 0)
+        {
+            return amount;
+        }
+
+        Console.WriteLine("Некорректный объем. Пример: 50000");
+    }
+}
+
+static bool IsOfferVolumeSuitable(P2POffer offer, double availableAmountRub)
+{
+    if (offer.VolumeMin is null)
+    {
+        return true;
+    }
+
+    return availableAmountRub >= offer.VolumeMin.Value;
 }
 
 bool CheckAndMarkStopSignal()
