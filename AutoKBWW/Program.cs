@@ -143,21 +143,41 @@ static List<P2POffer> ParseOffers(JsonElement menu)
             continue;
         }
 
-        var priceValue = TryParseFlexibleNumber(parts[1]);
+        string seller;
+        string rawPrice;
+        string rawVolume;
+
+        if (parts.Length == 2)
+        {
+            // Формат без ника: "79.8₽ · 16.75K"
+            seller = "(не указан)";
+            rawPrice = parts[0];
+            rawVolume = parts[1];
+        }
+        else
+        {
+            // Формат с ником: "Seller · 79.9₽ · 9.35K" либо "Seller · 80₽ · 7K - 7.50K"
+            seller = parts[0];
+            rawPrice = parts[1];
+            rawVolume = string.Join(" · ", parts.Skip(2));
+        }
+
+        var priceValue = TryParseFlexibleNumber(rawPrice);
         if (priceValue is null)
         {
             continue;
         }
 
-        var seller = parts[0];
-        var volume = parts.Length >= 3 ? parts[2] : string.Empty;
+        var (volumeMin, volumeMax) = TryParseVolumeRange(rawVolume);
 
         result.Add(new P2POffer
         {
             Seller = seller,
             Price = priceValue.Value,
-            RawPrice = parts[1],
-            Volume = volume,
+            RawPrice = rawPrice,
+            Volume = rawVolume,
+            VolumeMin = volumeMin,
+            VolumeMax = volumeMax,
             SourceLabel = label
         });
     }
@@ -179,12 +199,23 @@ static void PrintBestOffer(List<P2POffer> offers)
     Console.WriteLine($"Продавец: {best.Seller}");
     Console.WriteLine($"Цена: {best.RawPrice} (число: {best.Price.ToString(CultureInfo.InvariantCulture)})");
     Console.WriteLine($"Объем: {best.Volume}");
+    if (best.VolumeMin is not null)
+    {
+        var maxPart = best.VolumeMax is not null ? $" - {best.VolumeMax.Value.ToString(CultureInfo.InvariantCulture)}" : string.Empty;
+        Console.WriteLine($"Объем (число): {best.VolumeMin.Value.ToString(CultureInfo.InvariantCulture)}{maxPart}");
+    }
     Console.WriteLine($"Сырая строка: {best.SourceLabel}");
     Console.WriteLine("=== КОНЕЦ ===");
 }
 
 static double? TryParseFlexibleNumber(string source)
 {
+    if (string.IsNullOrWhiteSpace(source))
+    {
+        return null;
+    }
+
+    var hasK = source.Contains('K', StringComparison.OrdinalIgnoreCase);
     var filtered = new string(source.Where(ch => char.IsDigit(ch) || ch == '.' || ch == ',').ToArray());
     if (string.IsNullOrWhiteSpace(filtered))
     {
@@ -192,12 +223,31 @@ static double? TryParseFlexibleNumber(string source)
     }
 
     filtered = filtered.Replace(',', '.');
-    if (double.TryParse(filtered, NumberStyles.Any, CultureInfo.InvariantCulture, out var value))
+    if (!double.TryParse(filtered, NumberStyles.Any, CultureInfo.InvariantCulture, out var value))
     {
-        return value;
+        return null;
     }
 
-    return null;
+    return hasK ? value * 1000d : value;
+}
+
+static (double? Min, double? Max) TryParseVolumeRange(string rawVolume)
+{
+    if (string.IsNullOrWhiteSpace(rawVolume))
+    {
+        return (null, null);
+    }
+
+    var parts = rawVolume.Split('-', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries);
+    if (parts.Length == 1)
+    {
+        var single = TryParseFlexibleNumber(parts[0]);
+        return (single, single);
+    }
+
+    var min = TryParseFlexibleNumber(parts[0]);
+    var max = TryParseFlexibleNumber(parts[1]);
+    return (min, max);
 }
 
 static async Task<bool> ClickVisibleButtonByTextAsync(IPage page, string expectedText)
@@ -433,5 +483,7 @@ file sealed class P2POffer
     public required double Price { get; init; }
     public required string RawPrice { get; init; }
     public required string Volume { get; init; }
+    public double? VolumeMin { get; init; }
+    public double? VolumeMax { get; init; }
     public required string SourceLabel { get; init; }
 }
