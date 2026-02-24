@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Text.Json;
 using Microsoft.Playwright;
 
@@ -41,11 +42,251 @@ var extractionResult = await CollectMenuDataAsync(page);
 PrintMenuToConsole(extractionResult);
 await SaveSnapshotAsync(page, extractionResult, outputDirectory);
 
-await RunInteractiveButtonClickLoopAsync(page, outputDirectory);
+await RunInteractiveLoopAsync(page, outputDirectory);
 
 Console.WriteLine();
 Console.WriteLine("Нажмите ENTER для закрытия браузера...");
 Console.ReadLine();
+
+static async Task RunInteractiveLoopAsync(IPage page, string outputDirectory)
+{
+    Console.WriteLine();
+    Console.WriteLine("Команды: индекс кнопки (0..), AUTO - автосценарий P2P, R - перескан, Q - выход.");
+
+    while (true)
+    {
+        Console.Write("Ваш выбор: ");
+        var input = Console.ReadLine()?.Trim();
+
+        if (string.Equals(input, "Q", StringComparison.OrdinalIgnoreCase))
+        {
+            break;
+        }
+
+        if (string.Equals(input, "R", StringComparison.OrdinalIgnoreCase))
+        {
+            var refreshed = await CollectMenuDataAsync(page);
+            PrintMenuToConsole(refreshed);
+            await SaveSnapshotAsync(page, refreshed, outputDirectory);
+            continue;
+        }
+
+        if (string.Equals(input, "AUTO", StringComparison.OrdinalIgnoreCase))
+        {
+            await RunP2PAutomationAsync(page, outputDirectory);
+            continue;
+        }
+
+        if (!int.TryParse(input, out var displayIndex))
+        {
+            Console.WriteLine("Некорректный ввод. Укажите индекс, AUTO, R или Q.");
+            continue;
+        }
+
+        var clicked = await ClickVisibleButtonByIndexAsync(page, displayIndex);
+        if (!clicked)
+        {
+            Console.WriteLine($"Кнопка с индексом {displayIndex} не найдена в последних 30.");
+            continue;
+        }
+
+        await page.WaitForTimeoutAsync(500);
+        var refreshedAfterClick = await CollectMenuDataAsync(page);
+        PrintMenuToConsole(refreshedAfterClick);
+        await SaveSnapshotAsync(page, refreshedAfterClick, outputDirectory);
+    }
+}
+
+static async Task RunP2PAutomationAsync(IPage page, string outputDirectory)
+{
+    Console.WriteLine("Запускаю автоматизацию: P2P -> Купить -> Tether (USDT) -> СБП");
+
+    var sequence = new[] { "P2P", "Купить", "Tether (USDT)", "СБП" };
+
+    foreach (var expected in sequence)
+    {
+        var clicked = await ClickVisibleButtonByTextAsync(page, expected);
+        if (!clicked)
+        {
+            Console.WriteLine($"Автоматизация остановлена: кнопка '{expected}' не найдена.");
+            return;
+        }
+
+        Console.WriteLine($"Авто-нажатие: '{expected}' выполнено. Жду 3 сек...");
+        await page.WaitForTimeoutAsync(3000);
+
+        var stepScan = await CollectMenuDataAsync(page);
+        PrintMenuToConsole(stepScan);
+        await SaveSnapshotAsync(page, stepScan, outputDirectory);
+    }
+
+    var result = await CollectMenuDataAsync(page);
+    var offers = ParseOffers(result);
+    PrintBestOffer(offers);
+}
+
+static List<P2POffer> ParseOffers(JsonElement menu)
+{
+    var result = new List<P2POffer>();
+
+    if (!menu.TryGetProperty("visibleButtons", out var buttons) || buttons.ValueKind != JsonValueKind.Array)
+    {
+        return result;
+    }
+
+    foreach (var button in buttons.EnumerateArray())
+    {
+        var label = GetString(button, "label");
+        var parts = label.Split('·', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries);
+        if (parts.Length < 2)
+        {
+            continue;
+        }
+
+        var priceValue = TryParseFlexibleNumber(parts[1]);
+        if (priceValue is null)
+        {
+            continue;
+        }
+
+        var seller = parts[0];
+        var volume = parts.Length >= 3 ? parts[2] : string.Empty;
+
+        result.Add(new P2POffer
+        {
+            Seller = seller,
+            Price = priceValue.Value,
+            RawPrice = parts[1],
+            Volume = volume,
+            SourceLabel = label
+        });
+    }
+
+    return result;
+}
+
+static void PrintBestOffer(List<P2POffer> offers)
+{
+    if (offers.Count == 0)
+    {
+        Console.WriteLine("Подходящие P2P офферы не распознаны на текущем экране.");
+        return;
+    }
+
+    var best = offers.OrderBy(x => x.Price).First();
+    Console.WriteLine();
+    Console.WriteLine("=== ЛУЧШЕЕ ПРЕДЛОЖЕНИЕ (минимальная цена) ===");
+    Console.WriteLine($"Продавец: {best.Seller}");
+    Console.WriteLine($"Цена: {best.RawPrice} (число: {best.Price.ToString(CultureInfo.InvariantCulture)})");
+    Console.WriteLine($"Объем: {best.Volume}");
+    Console.WriteLine($"Сырая строка: {best.SourceLabel}");
+    Console.WriteLine("=== КОНЕЦ ===");
+}
+
+static double? TryParseFlexibleNumber(string source)
+{
+    var filtered = new string(source.Where(ch => char.IsDigit(ch) || ch == '.' || ch == ',').ToArray());
+    if (string.IsNullOrWhiteSpace(filtered))
+    {
+        return null;
+    }
+
+    filtered = filtered.Replace(',', '.');
+    if (double.TryParse(filtered, NumberStyles.Any, CultureInfo.InvariantCulture, out var value))
+    {
+        return value;
+    }
+
+    return null;
+}
+
+static async Task<bool> ClickVisibleButtonByTextAsync(IPage page, string expectedText)
+{
+    var target = await page.EvaluateAsync<ClickTarget?>("""
+(expectedText) => {
+  const normalize = (s) => (s || '').replace(/\s+/g, ' ').trim().toLowerCase();
+  const text = (el) => (el?.textContent || '').replace(/\s+/g, ' ').trim();
+
+  const allVisibleButtons = Array.from(document.querySelectorAll('button, [role="button"], .reply-markup-button, .Button'))
+    .filter((btn) => {
+      const rect = btn.getBoundingClientRect();
+      const style = getComputedStyle(btn);
+      const visible = rect.width > 0 && rect.height > 0 && style.visibility !== 'hidden' && style.display !== 'none';
+      if (!visible) return false;
+      const t = text(btn);
+      return t.length > 0 || (btn.getAttribute('aria-label') || '').trim().length > 0;
+    });
+
+  const expected = normalize(expectedText);
+  const hit = allVisibleButtons.find((btn) => normalize(text(btn)).includes(expected));
+  if (!hit) return null;
+
+  const rect = hit.getBoundingClientRect();
+  return {
+    x: rect.left + rect.width / 2,
+    y: rect.top + rect.height / 2,
+    label: text(hit)
+  };
+}
+""", expectedText);
+
+    if (target is null)
+    {
+        return false;
+    }
+
+    await page.Mouse.MoveAsync((float)target.X, (float)target.Y);
+    await page.Mouse.DownAsync();
+    await page.Mouse.UpAsync();
+    return true;
+}
+
+static async Task<bool> ClickVisibleButtonByIndexAsync(IPage page, int displayIndex)
+{
+    var target = await page.EvaluateAsync<ClickTarget?>("""
+(displayIndex) => {
+  const text = (el) => (el?.textContent || '').replace(/\s+/g, ' ').trim();
+  const allVisibleButtons = Array.from(document.querySelectorAll('button, [role="button"], .reply-markup-button, .Button'))
+    .map((btn, domIndex) => ({ btn, domIndex }))
+    .filter(({ btn }) => {
+      const rect = btn.getBoundingClientRect();
+      const style = getComputedStyle(btn);
+      const visible = rect.width > 0 && rect.height > 0 && style.visibility !== 'hidden' && style.display !== 'none';
+      if (!visible) return false;
+      const t = text(btn);
+      return t.length > 0 || (btn.getAttribute('aria-label') || '').trim().length > 0;
+    })
+    .sort((a, b) => {
+      const ar = a.btn.getBoundingClientRect();
+      const br = b.btn.getBoundingClientRect();
+      if (Math.abs(ar.top - br.top) > 6) return ar.top - br.top;
+      return ar.left - br.left;
+    });
+
+  const last30 = allVisibleButtons.slice(-30);
+  const chosen = last30[displayIndex];
+  if (!chosen) return null;
+
+  const rect = chosen.btn.getBoundingClientRect();
+  return {
+    x: rect.left + rect.width / 2,
+    y: rect.top + rect.height / 2,
+    label: text(chosen.btn)
+  };
+}
+""", displayIndex);
+
+    if (target is null)
+    {
+        return false;
+    }
+
+    await page.Mouse.MoveAsync((float)target.X, (float)target.Y);
+    await page.Mouse.DownAsync();
+    await page.Mouse.UpAsync();
+    Console.WriteLine($"Нажата кнопка [{displayIndex}] '{target.Label}'.");
+    return true;
+}
 
 static async Task<JsonElement> CollectMenuDataAsync(IPage page)
 {
@@ -65,6 +306,12 @@ static async Task<JsonElement> CollectMenuDataAsync(IPage page)
       if (!visible) return false;
       const t = text(btn);
       return t.length > 0 || (btn.getAttribute('aria-label') || '').trim().length > 0;
+    })
+    .sort((a, b) => {
+      const ar = a.btn.getBoundingClientRect();
+      const br = b.btn.getBoundingClientRect();
+      if (Math.abs(ar.top - br.top) > 6) return ar.top - br.top;
+      return ar.left - br.left;
     });
 
   const last30 = allVisibleButtons.slice(-30);
@@ -101,7 +348,6 @@ static void PrintMenuToConsole(JsonElement result)
     Console.WriteLine($"Текст над кнопками: {GetString(result, "messageAboveButtons")}");
     Console.WriteLine($"Время сообщения: {GetString(result, "messageTime")}");
     Console.WriteLine($"Показано кнопок (последние): {GetInt(result, "visibleButtonCount")}");
-    Console.WriteLine($"Всего видимых кнопок на странице: {GetInt(result, "totalVisibleButtonCount")}");
 
     if (result.TryGetProperty("visibleButtons", out var buttons) && buttons.ValueKind == JsonValueKind.Array)
     {
@@ -131,72 +377,6 @@ static async Task SaveSnapshotAsync(IPage page, JsonElement result, string outpu
 
     Console.WriteLine($"JSON: {jsonPath}");
     Console.WriteLine($"HTML snapshot: {htmlPath}");
-}
-
-static async Task RunInteractiveButtonClickLoopAsync(IPage page, string outputDirectory)
-{
-    Console.WriteLine();
-    Console.WriteLine("Введите индекс кнопки для нажатия (из последних 30). Q — выход.");
-
-    while (true)
-    {
-        Console.Write("Ваш выбор: ");
-        var input = Console.ReadLine()?.Trim();
-
-        if (string.Equals(input, "Q", StringComparison.OrdinalIgnoreCase))
-        {
-            break;
-        }
-
-        if (!int.TryParse(input, out var displayIndex))
-        {
-            Console.WriteLine("Некорректный ввод. Укажите индекс кнопки или Q.");
-            continue;
-        }
-
-        var target = await page.EvaluateAsync<ClickTarget?>("""
-(displayIndex) => {
-  const text = (el) => (el?.textContent || '').replace(/\s+/g, ' ').trim();
-  const allVisibleButtons = Array.from(document.querySelectorAll('button, [role="button"], .reply-markup-button, .Button'))
-    .map((btn, domIndex) => ({ btn, domIndex }))
-    .filter(({ btn }) => {
-      const rect = btn.getBoundingClientRect();
-      const style = getComputedStyle(btn);
-      const visible = rect.width > 0 && rect.height > 0 && style.visibility !== 'hidden' && style.display !== 'none';
-      if (!visible) return false;
-      const t = text(btn);
-      return t.length > 0 || (btn.getAttribute('aria-label') || '').trim().length > 0;
-    });
-
-  const last30 = allVisibleButtons.slice(-30);
-  const chosen = last30[displayIndex];
-  if (!chosen) return null;
-
-  const rect = chosen.btn.getBoundingClientRect();
-  return {
-    x: rect.left + rect.width / 2,
-    y: rect.top + rect.height / 2,
-    label: text(chosen.btn)
-  };
-}
-""", displayIndex);
-
-        if (target is null)
-        {
-            Console.WriteLine($"Кнопка с индексом {displayIndex} не найдена в последних 30.");
-            continue;
-        }
-
-        await page.Mouse.MoveAsync((float)target.X, (float)target.Y);
-        await page.Mouse.DownAsync();
-        await page.Mouse.UpAsync();
-        Console.WriteLine($"Нажата кнопка [{displayIndex}] '{target.Label}'.");
-
-        await page.WaitForTimeoutAsync(500);
-        var refreshed = await CollectMenuDataAsync(page);
-        PrintMenuToConsole(refreshed);
-        await SaveSnapshotAsync(page, refreshed, outputDirectory);
-    }
 }
 
 static int GetInt(JsonElement source, string propertyName)
@@ -245,4 +425,13 @@ file sealed class ClickTarget
     public required double X { get; init; }
     public required double Y { get; init; }
     public required string Label { get; init; }
+}
+
+file sealed class P2POffer
+{
+    public required string Seller { get; init; }
+    public required double Price { get; init; }
+    public required string RawPrice { get; init; }
+    public required string Volume { get; init; }
+    public required string SourceLabel { get; init; }
 }
