@@ -51,7 +51,7 @@ Console.ReadLine();
 static async Task RunInteractiveLoopAsync(IPage page, string outputDirectory)
 {
     Console.WriteLine();
-    Console.WriteLine("Команды: индекс кнопки (0..), A - автосценарий P2P, R - перескан, Q - выход.");
+    PrintCommandsHint();
 
     while (true)
     {
@@ -68,18 +68,21 @@ static async Task RunInteractiveLoopAsync(IPage page, string outputDirectory)
             var refreshed = await CollectMenuDataAsync(page);
             PrintMenuToConsole(refreshed);
             await SaveSnapshotAsync(page, refreshed, outputDirectory);
+            PrintCommandsHint();
             continue;
         }
 
         if (string.Equals(input, "A", StringComparison.OrdinalIgnoreCase) || string.Equals(input, "AUTO", StringComparison.OrdinalIgnoreCase))
         {
             await RunP2PAutomationAsync(page, outputDirectory);
+            PrintCommandsHint();
             continue;
         }
 
         if (!int.TryParse(input, out var displayIndex))
         {
             Console.WriteLine("Некорректный ввод. Укажите индекс, A, R или Q.");
+            PrintCommandsHint();
             continue;
         }
 
@@ -87,6 +90,7 @@ static async Task RunInteractiveLoopAsync(IPage page, string outputDirectory)
         if (!clicked)
         {
             Console.WriteLine($"Кнопка с индексом {displayIndex} не найдена в последних 30.");
+            PrintCommandsHint();
             continue;
         }
 
@@ -94,7 +98,13 @@ static async Task RunInteractiveLoopAsync(IPage page, string outputDirectory)
         var refreshedAfterClick = await CollectMenuDataAsync(page);
         PrintMenuToConsole(refreshedAfterClick);
         await SaveSnapshotAsync(page, refreshedAfterClick, outputDirectory);
+        PrintCommandsHint();
     }
+}
+
+static void PrintCommandsHint()
+{
+    Console.WriteLine("Команды: индекс кнопки (0..), A - автосценарий P2P, R - перескан, Q - выход.");
 }
 
 static async Task RunP2PAutomationAsync(IPage page, string outputDirectory)
@@ -152,7 +162,11 @@ static List<P2POffer> ParseOffers(JsonElement menu)
         return result;
     }
 
-    foreach (var button in buttons.EnumerateArray())
+    var list = buttons.EnumerateArray().ToList();
+    var filtersIndex = list.FindIndex(x => GetString(x, "label").Contains("Фильтры и сортировка", StringComparison.OrdinalIgnoreCase));
+    var candidates = filtersIndex >= 0 ? list.Skip(filtersIndex + 1) : list;
+
+    foreach (var button in candidates)
     {
         var label = GetString(button, "label");
         var parts = label.Split('·', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries);
@@ -237,7 +251,7 @@ static void PrintDealInfo(DealInfo info)
     }
     else
     {
-        Console.WriteLine(info.MessageText);
+        Console.WriteLine(FormatDealMessage(info.MessageText));
     }
 
     Console.WriteLine($"Кнопка действия: {info.ActionButtonLabel}");
@@ -249,11 +263,12 @@ static async Task<DealInfo> ExtractDealInfoAsync(IPage page)
     var data = await page.EvaluateAsync<DealInfo?>("""
 () => {
   const text = (el) => (el?.textContent || '').replace(/\s+/g, ' ').trim();
+  const blockText = (el) => (el?.innerText || el?.textContent || '').replace(/\r/g, '').trim();
   const messages = Array.from(document.querySelectorAll('.bubble, .message'));
 
   let dealMessage = '';
   for (let i = messages.length - 1; i >= 0; i--) {
-    const t = text(messages[i].querySelector('.bubble-content-wrapper')) || text(messages[i]);
+    const t = blockText(messages[i].querySelector('.bubble-content-wrapper')) || blockText(messages[i]);
     if (t.toLowerCase().includes('объявление')) {
       dealMessage = t;
       break;
@@ -275,6 +290,27 @@ static async Task<DealInfo> ExtractDealInfoAsync(IPage page)
         MessageText = string.Empty,
         ActionButtonLabel = "(не удалось извлечь)"
     };
+}
+
+static string FormatDealMessage(string message)
+{
+    if (string.IsNullOrWhiteSpace(message))
+    {
+        return string.Empty;
+    }
+
+    var formatted = message.Replace("\r", string.Empty).Trim();
+    formatted = formatted.Replace("Цена за 1 USDT", "\nЦена за 1 USDT");
+    formatted = formatted.Replace("Доступный объём", "\nДоступный объём");
+    formatted = formatted.Replace("Способ оплаты", "\nСпособ оплаты");
+    formatted = formatted.Replace("Условия сделки", "\n\nУсловия сделки");
+
+    while (formatted.Contains("\n\n\n", StringComparison.Ordinal))
+    {
+        formatted = formatted.Replace("\n\n\n", "\n\n", StringComparison.Ordinal);
+    }
+
+    return formatted;
 }
 
 static double? TryParseFlexibleNumber(string source)
@@ -325,6 +361,7 @@ static async Task<bool> ClickVisibleButtonByTextAsync(IPage page, string expecte
 (expectedText) => {
   const normalize = (s) => (s || '').replace(/\s+/g, ' ').trim().toLowerCase();
   const text = (el) => (el?.textContent || '').replace(/\s+/g, ' ').trim();
+  const blockText = (el) => (el?.innerText || el?.textContent || '').replace(/\r/g, '').trim();
 
   const allVisibleButtons = Array.from(document.querySelectorAll('button, [role="button"], .reply-markup-button, .Button'))
     .filter((btn) => {
@@ -365,6 +402,7 @@ static async Task<bool> ClickVisibleButtonByIndexAsync(IPage page, int displayIn
     var target = await page.EvaluateAsync<ClickTarget?>("""
 (displayIndex) => {
   const text = (el) => (el?.textContent || '').replace(/\s+/g, ' ').trim();
+  const blockText = (el) => (el?.innerText || el?.textContent || '').replace(/\r/g, '').trim();
   const allVisibleButtons = Array.from(document.querySelectorAll('button, [role="button"], .reply-markup-button, .Button'))
     .map((btn, domIndex) => ({ btn, domIndex }))
     .filter(({ btn }) => {
@@ -418,6 +456,7 @@ static async Task<JsonElement> CollectMenuDataAsync(IPage page)
     return await page.EvaluateAsync<JsonElement>("""
 () => {
   const text = (el) => (el?.textContent || '').replace(/\s+/g, ' ').trim();
+  const blockText = (el) => (el?.innerText || el?.textContent || '').replace(/\r/g, '').trim();
 
   const bubbles = Array.from(document.querySelectorAll('.bubble, .message'));
   const lastBubble = bubbles.at(-1) || null;
