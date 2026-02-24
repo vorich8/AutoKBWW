@@ -46,7 +46,7 @@ Console.WriteLine();
 Console.WriteLine("Нажмите ENTER для закрытия браузера...");
 Console.ReadLine();
 
-static async Task RunInteractiveLoopAsync(IPage page)
+async Task RunInteractiveLoopAsync(IPage page)
 {
     PrintCommandsHint();
 
