@@ -7,6 +7,7 @@ using var playwright = await Playwright.CreateAsync();
 
 double? cachedMarketPriceRub = null;
 DateTimeOffset cachedMarketPriceAt = DateTimeOffset.MinValue;
+bool stopAllRequested = false;
 
 var yandexBrowserPath = ResolveYandexBrowserPath();
 var userDataDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "AutoKBWW", "PlaywrightProfile");
@@ -67,6 +68,21 @@ async Task RunInteractiveLoopAsync(IPage page)
             continue;
         }
 
+        if (string.Equals(input, "S", StringComparison.OrdinalIgnoreCase))
+        {
+            stopAllRequested = true;
+            Console.WriteLine("Получен стоп-сигнал. Текущие процессы автоматики будут остановлены.");
+            PrintCommandsHint();
+            continue;
+        }
+
+        if (string.Equals(input, "V", StringComparison.OrdinalIgnoreCase))
+        {
+            await RunVo8rStatusAutomationAsync(page);
+            PrintCommandsHint();
+            continue;
+        }
+
         if (string.Equals(input, "A", StringComparison.OrdinalIgnoreCase) || string.Equals(input, "AUTO", StringComparison.OrdinalIgnoreCase))
         {
             await RunP2PAutomationAsync(page);
@@ -76,7 +92,7 @@ async Task RunInteractiveLoopAsync(IPage page)
 
         if (!int.TryParse(input, out var displayIndex))
         {
-            Console.WriteLine("Некорректный ввод. Укажите индекс, A, R или Q.");
+            Console.WriteLine("Некорректный ввод. Укажите индекс, A, V, R, S или Q.");
             PrintCommandsHint();
             continue;
         }
@@ -97,11 +113,13 @@ async Task RunInteractiveLoopAsync(IPage page)
 
 static void PrintCommandsHint()
 {
-    Console.WriteLine("Команды: индекс кнопки (0..), A - автосценарий P2P, R - перескан, Q - выход.");
+    Console.WriteLine("Команды: индекс кнопки (0..), A - автосценарий P2P, V - VO8R статус, R - перескан, S - стоп автоматики, Q - выход.");
 }
 
 async Task RunP2PAutomationAsync(IPage page)
 {
+    stopAllRequested = false;
+
     var marketPrice = await ResolveMarketPriceAsync(
         getCached: () => (cachedMarketPriceRub, cachedMarketPriceAt),
         setCached: value => { cachedMarketPriceRub = value.Price; cachedMarketPriceAt = value.At; });
@@ -120,7 +138,12 @@ async Task RunP2PAutomationAsync(IPage page)
         }
 
         Console.WriteLine($"Авто-нажатие: '{expected}' выполнено. Жду 3 сек...");
-        await page.WaitForTimeoutAsync(3000);
+        await WaitWithStopAsync(page, 3000);
+        if (stopAllRequested)
+        {
+            Console.WriteLine("Автоматизация остановлена клавишей S.");
+            return;
+        }
         PrintMenuToConsole(await CollectMenuDataAsync(page));
     }
 
@@ -142,10 +165,19 @@ async Task RunP2PAutomationAsync(IPage page)
     PrintDealInfo(await ExtractDealInfoAsync(page));
 }
 
-static async Task<P2POffer?> FindBestOfferWithPagingAsync(IPage page, double marketPrice)
+async Task<P2POffer?> FindBestOfferWithPagingAsync(IPage page, double marketPrice)
 {
-    for (var attempt = 1; attempt <= 30; attempt++)
+    var attempt = 0;
+    while (true)
     {
+        attempt++;
+
+        if (CheckAndMarkStopSignal())
+        {
+            Console.WriteLine("Поиск остановлен клавишей S.");
+            return null;
+        }
+
         var menu = await CollectMenuDataAsync(page);
         var offers = ParseOffers(menu);
 
@@ -161,7 +193,12 @@ static async Task<P2POffer?> FindBestOfferWithPagingAsync(IPage page, double mar
         }
 
         Console.WriteLine("Подходящих объявлений нет. Жду 5 сек и нажимаю кнопку '· 1 ·' для следующего скана...");
-        await page.WaitForTimeoutAsync(5000);
+        await WaitWithStopAsync(page, 5000);
+        if (stopAllRequested)
+        {
+            Console.WriteLine("Поиск остановлен клавишей S.");
+            return null;
+        }
 
         var pagerClicked = await ClickVisibleButtonByTextAsync(page, "· 1 ·", startsWith: false, containsOnly: true);
         if (!pagerClicked)
@@ -170,10 +207,80 @@ static async Task<P2POffer?> FindBestOfferWithPagingAsync(IPage page, double mar
             return null;
         }
 
-        await page.WaitForTimeoutAsync(5000);
+        await WaitWithStopAsync(page, 5000);
+        if (stopAllRequested)
+        {
+            Console.WriteLine("Поиск остановлен клавишей S.");
+            return null;
+        }
+    }
+}
+
+async Task RunVo8rStatusAutomationAsync(IPage page)
+{
+    stopAllRequested = false;
+    Console.WriteLine("Запускаю автоматизацию VO8R: перейти в чат, отправить 'Работаю', вернуться в CryptoBot...");
+
+    var openedVo8r = await ClickChatByTitleAsync(page, "VO8R");
+    if (!openedVo8r)
+    {
+        Console.WriteLine("Чат VO8R не найден в закрепленных.");
+        return;
     }
 
-    return null;
+    await WaitWithStopAsync(page, 1500);
+    if (stopAllRequested) return;
+
+    var sent = await SendMessageToCurrentChatAsync(page, "Работаю");
+    if (!sent)
+    {
+        Console.WriteLine("Не удалось отправить сообщение в чат VO8R.");
+        return;
+    }
+
+    await WaitWithStopAsync(page, 1500);
+    if (stopAllRequested) return;
+
+    var backToBot = await ClickChatByTitleAsync(page, "Crypto");
+    Console.WriteLine(backToBot
+        ? "Возврат в чат CryptoBot выполнен."
+        : "Не удалось найти чат CryptoBot в закрепленных.");
+}
+
+bool CheckAndMarkStopSignal()
+{
+    if (stopAllRequested)
+    {
+        return true;
+    }
+
+    while (Console.KeyAvailable)
+    {
+        var key = Console.ReadKey(intercept: true);
+        if (key.Key == ConsoleKey.S)
+        {
+            stopAllRequested = true;
+            return true;
+        }
+    }
+
+    return false;
+}
+
+async Task WaitWithStopAsync(IPage page, int totalMs)
+{
+    var remaining = totalMs;
+    while (remaining > 0)
+    {
+        if (CheckAndMarkStopSignal())
+        {
+            break;
+        }
+
+        var step = Math.Min(250, remaining);
+        await page.WaitForTimeoutAsync(step);
+        remaining -= step;
+    }
 }
 
 static async Task<double> ResolveMarketPriceAsync(
@@ -432,6 +539,49 @@ static (double? Min, double? Max) TryParseVolumeRange(string rawVolume)
     }
 
     return (TryParseFlexibleNumber(parts[0]), TryParseFlexibleNumber(parts[1]));
+}
+
+static async Task<bool> ClickChatByTitleAsync(IPage page, string titlePart)
+{
+    var target = await page.EvaluateAsync<ClickTarget?>("""
+(titlePart) => {
+  const normalize = (s) => (s || '').replace(/\s+/g, ' ').trim().toLowerCase();
+  const wanted = normalize(titlePart);
+  const text = (el) => (el?.textContent || '').replace(/\s+/g, ' ').trim();
+
+  const items = Array.from(document.querySelectorAll('.chatlist-chat, .chat-item, [data-peer-id], .ListItem'));
+  const hit = items.find((item) => normalize(text(item)).includes(wanted));
+  if (!hit) return null;
+
+  const rect = hit.getBoundingClientRect();
+  return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2, label: text(hit) };
+}
+""", titlePart);
+
+    if (target is null) return false;
+
+    await page.Mouse.MoveAsync((float)target.X, (float)target.Y);
+    await page.Mouse.DownAsync();
+    await page.Mouse.UpAsync();
+    return true;
+}
+
+static async Task<bool> SendMessageToCurrentChatAsync(IPage page, string message)
+{
+    var focused = await page.EvaluateAsync<bool>("""
+() => {
+  const input = document.querySelector('div[contenteditable="true"], .input-message-input, .composer_rich_textarea');
+  if (!input) return false;
+  input.focus();
+  return true;
+}
+""");
+
+    if (!focused) return false;
+
+    await page.Keyboard.TypeAsync(message);
+    await page.Keyboard.PressAsync("Enter");
+    return true;
 }
 
 static async Task<bool> ClickVisibleButtonByTextAsync(IPage page, string expectedText, bool startsWith, bool containsOnly = false)
