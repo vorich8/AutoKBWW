@@ -5,6 +5,9 @@ using Microsoft.Playwright;
 
 using var playwright = await Playwright.CreateAsync();
 
+double? cachedMarketPriceRub = null;
+DateTimeOffset cachedMarketPriceAt = DateTimeOffset.MinValue;
+
 var yandexBrowserPath = ResolveYandexBrowserPath();
 var userDataDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "AutoKBWW", "PlaywrightProfile");
 Directory.CreateDirectory(userDataDir);
@@ -97,9 +100,11 @@ static void PrintCommandsHint()
     Console.WriteLine("Команды: индекс кнопки (0..), A - автосценарий P2P, R - перескан, Q - выход.");
 }
 
-static async Task RunP2PAutomationAsync(IPage page)
+async Task RunP2PAutomationAsync(IPage page)
 {
-    var marketPrice = await ResolveMarketPriceAsync();
+    var marketPrice = await ResolveMarketPriceAsync(
+        getCached: () => (cachedMarketPriceRub, cachedMarketPriceAt),
+        setCached: value => { cachedMarketPriceRub = value.Price; cachedMarketPriceAt = value.At; });
     Console.WriteLine($"Рыночная цена USDT/RUB: {marketPrice.ToString(CultureInfo.InvariantCulture)}");
 
     Console.WriteLine("Запускаю автоматизацию: P2P -> Купить -> Tether (USDT) -> СБП");
@@ -171,21 +176,32 @@ static async Task<P2POffer?> FindBestOfferWithPagingAsync(IPage page, double mar
     return null;
 }
 
-static async Task<double> ResolveMarketPriceAsync()
+static async Task<double> ResolveMarketPriceAsync(
+    Func<(double? Price, DateTimeOffset At)> getCached,
+    Action<(double Price, DateTimeOffset At)> setCached)
 {
+    var cached = getCached();
+    if (cached.Price is not null && DateTimeOffset.UtcNow - cached.At < TimeSpan.FromMinutes(10))
+    {
+        Console.WriteLine($"Использую кэш рыночной цены ({cached.At:HH:mm:ss}): {cached.Price.Value.ToString(CultureInfo.InvariantCulture)}");
+        return cached.Price.Value;
+    }
+
     var market = await TryGetMarketPriceRubAsync();
     if (market is not null)
     {
-        Console.WriteLine($"Получил рыночную цену с CoinMarketCap: {market.Value.ToString(CultureInfo.InvariantCulture)}");
+        setCached((market.Value, DateTimeOffset.UtcNow));
+        Console.WriteLine($"Обновил рыночную цену из интернета: {market.Value.ToString(CultureInfo.InvariantCulture)}");
         return market.Value;
     }
 
     while (true)
     {
-        Console.Write("Не удалось получить цену с сайта. Введите рыночную цену USDT/RUB вручную: ");
+        Console.Write("Не удалось получить цену с сайтов. Введите рыночную цену USDT/RUB вручную: ");
         var input = Console.ReadLine();
         if (double.TryParse((input ?? string.Empty).Replace(',', '.'), NumberStyles.Any, CultureInfo.InvariantCulture, out var manual) && manual > 0)
         {
+            setCached((manual, DateTimeOffset.UtcNow));
             return manual;
         }
 
@@ -195,13 +211,34 @@ static async Task<double> ResolveMarketPriceAsync()
 
 static async Task<double?> TryGetMarketPriceRubAsync()
 {
+    using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(20) };
+    http.DefaultRequestHeaders.UserAgent.ParseAdd("Mozilla/5.0");
+
+    // 1) CoinGecko API (основной источник)
     try
     {
-        using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(20) };
-        http.DefaultRequestHeaders.UserAgent.ParseAdd("Mozilla/5.0");
+        var json = await http.GetStringAsync("https://api.coingecko.com/api/v3/simple/price?ids=tether&vs_currencies=rub");
+        using var doc = JsonDocument.Parse(json);
+        if (doc.RootElement.TryGetProperty("tether", out var tether) &&
+            tether.TryGetProperty("rub", out var rub) &&
+            rub.ValueKind == JsonValueKind.Number)
+        {
+            var value = rub.GetDouble();
+            if (value is > 10 and < 200)
+            {
+                return value;
+            }
+        }
+    }
+    catch
+    {
+        // next source
+    }
 
+    // 2) CoinMarketCap page fallback
+    try
+    {
         var html = await http.GetStringAsync("https://coinmarketcap.com/currencies/tether/usdt/rub/");
-
         var patterns = new[]
         {
             @"price today is[^0-9]{0,40}([0-9]+(?:[\.,][0-9]+)?)",
@@ -213,27 +250,16 @@ static async Task<double?> TryGetMarketPriceRubAsync()
             var matches = Regex.Matches(html, pattern, RegexOptions.IgnoreCase);
             foreach (Match m in matches)
             {
-                if (m.Groups.Count < 2)
-                {
-                    continue;
-                }
-
+                if (m.Groups.Count < 2) continue;
                 var raw = m.Groups[1].Value.Replace(',', '.');
-                if (!double.TryParse(raw, NumberStyles.Any, CultureInfo.InvariantCulture, out var value))
-                {
-                    continue;
-                }
-
-                if (value is > 10 and < 200)
-                {
-                    return value;
-                }
+                if (!double.TryParse(raw, NumberStyles.Any, CultureInfo.InvariantCulture, out var value)) continue;
+                if (value is > 10 and < 200) return value;
             }
         }
     }
     catch
     {
-        // fallback below
+        // fallback to manual
     }
 
     return null;
