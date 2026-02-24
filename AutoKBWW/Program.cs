@@ -45,7 +45,33 @@ Console.ReadLine();
 
 await page.WaitForLoadStateAsync(LoadState.DOMContentLoaded, new PageWaitForLoadStateOptions { Timeout = 0 });
 
-var extractionResult = await page.EvaluateAsync<JsonElement>("""
+var extractionResult = await CollectStructuredDataAsync(page);
+PrintExtractionToConsole(extractionResult);
+
+var options = new JsonSerializerOptions { WriteIndented = true };
+var json = JsonSerializer.Serialize(extractionResult, options);
+
+var timestamp = DateTimeOffset.Now.ToString("yyyyMMdd_HHmmss");
+var jsonPath = Path.Combine(outputDirectory, $"cryptobot_structured_{timestamp}.json");
+var htmlPath = Path.Combine(outputDirectory, $"telegram_snapshot_{timestamp}.html");
+
+await File.WriteAllTextAsync(jsonPath, json);
+await File.WriteAllTextAsync(htmlPath, await page.ContentAsync());
+
+Console.WriteLine();
+Console.WriteLine("Сбор и структурирование данных завершены.");
+Console.WriteLine($"JSON: {jsonPath}");
+Console.WriteLine($"HTML snapshot: {htmlPath}");
+
+await RunInteractiveButtonClickLoopAsync(page);
+
+Console.WriteLine();
+Console.WriteLine("Нажмите ENTER для закрытия браузера...");
+Console.ReadLine();
+
+static async Task<JsonElement> CollectStructuredDataAsync(IPage page)
+{
+    return await page.EvaluateAsync<JsonElement>("""
 () => {
   const text = (el) => (el?.textContent || '').replace(/\s+/g, ' ').trim();
 
@@ -53,7 +79,7 @@ var extractionResult = await page.EvaluateAsync<JsonElement>("""
   const lastMessageText = text(lastMessageNode);
   const lastMessageTime = text(lastMessageNode?.querySelector('time, .time, .message-time'));
 
-  const buttonCandidates = Array.from(document.querySelectorAll('button, [role="button"], .reply-markup-button, .Button'));  
+  const buttonCandidates = Array.from(document.querySelectorAll('button, [role="button"], .reply-markup-button, .Button'));
   const visibleButtons = buttonCandidates
     .filter((btn) => {
       const rect = btn.getBoundingClientRect();
@@ -103,24 +129,156 @@ var extractionResult = await page.EvaluateAsync<JsonElement>("""
   };
 }
 """);
+}
 
-var options = new JsonSerializerOptions { WriteIndented = true };
-var json = JsonSerializer.Serialize(extractionResult, options);
+static void PrintExtractionToConsole(JsonElement result)
+{
+    Console.WriteLine();
+    Console.WriteLine("=== ЧТО СОБРАЛ И КАК СТРУКТУРИРОВАЛ ===");
+    Console.WriteLine($"Время сбора: {GetString(result, "extractedAt")}");
+    Console.WriteLine($"Страница: {GetString(result, "pageTitle")}");
+    Console.WriteLine($"URL: {GetString(result, "url")}");
+    Console.WriteLine($"Активный чат: {GetString(result, "activeChatTitle")}");
 
-var timestamp = DateTimeOffset.Now.ToString("yyyyMMdd_HHmmss");
-var jsonPath = Path.Combine(outputDirectory, $"cryptobot_structured_{timestamp}.json");
-var htmlPath = Path.Combine(outputDirectory, $"telegram_snapshot_{timestamp}.html");
+    if (result.TryGetProperty("botUi", out var botUi) &&
+        botUi.TryGetProperty("visibleButtonCount", out var countEl))
+    {
+        Console.WriteLine();
+        Console.WriteLine($"Найдено видимых кнопок: {countEl.GetInt32()}");
+    }
 
-await File.WriteAllTextAsync(jsonPath, json);
-await File.WriteAllTextAsync(htmlPath, await page.ContentAsync());
+    if (result.TryGetProperty("botUi", out botUi) &&
+        botUi.TryGetProperty("visibleButtons", out var buttonsEl) &&
+        buttonsEl.ValueKind == JsonValueKind.Array)
+    {
+        Console.WriteLine("Кнопки:");
+        foreach (var button in buttonsEl.EnumerateArray())
+        {
+            var index = button.TryGetProperty("index", out var idxEl) ? idxEl.GetInt32() : -1;
+            var label = GetString(button, "label");
+            var aria = GetString(button, "ariaLabel");
+            Console.WriteLine($"  [{index}] label='{label}', aria='{aria}'");
+        }
+    }
 
-Console.WriteLine();
-Console.WriteLine("Сбор и структурирование данных завершены.");
-Console.WriteLine($"JSON: {jsonPath}");
-Console.WriteLine($"HTML snapshot: {htmlPath}");
-Console.WriteLine();
-Console.WriteLine("Нажмите ENTER для закрытия браузера...");
-Console.ReadLine();
+    if (result.TryGetProperty("lastMessage", out var lastMessage))
+    {
+        Console.WriteLine();
+        Console.WriteLine("Последнее сообщение:");
+        Console.WriteLine($"  Время: {GetString(lastMessage, "time")}");
+        Console.WriteLine($"  Текст: {GetString(lastMessage, "text")}");
+
+        PrintArray(lastMessage, "detectedAmounts", "  Обнаружены суммы");
+        PrintArray(lastMessage, "detectedLinks", "  Обнаружены ссылки");
+        PrintArray(lastMessage, "detectedCodes", "  Обнаружены коды");
+
+        if (lastMessage.TryGetProperty("cryptoBotSignals", out var signals))
+        {
+            Console.WriteLine("  Что понял по сообщению:");
+            Console.WriteLine($"    invoice/check: {GetBool(signals, "hasInvoiceKeyword")}/{GetBool(signals, "hasCheckKeyword")}");
+            Console.WriteLine($"    balance/send/receive: {GetBool(signals, "hasBalanceKeyword")}/{GetBool(signals, "hasSendKeyword")}/{GetBool(signals, "hasReceiveKeyword")}");
+        }
+    }
+
+    Console.WriteLine("=== КОНЕЦ ОТЧЕТА ===");
+}
+
+static async Task RunInteractiveButtonClickLoopAsync(IPage page)
+{
+    Console.WriteLine();
+    Console.WriteLine("Можно нажимать кнопки через мышь Playwright.");
+    Console.WriteLine("Введите индекс кнопки (как в списке выше) и ENTER.");
+    Console.WriteLine("Введите R чтобы обновить сбор данных, Q чтобы закончить.");
+
+    while (true)
+    {
+        Console.Write("Ваш выбор: ");
+        var input = Console.ReadLine()?.Trim();
+
+        if (string.Equals(input, "Q", StringComparison.OrdinalIgnoreCase))
+        {
+            break;
+        }
+
+        if (string.Equals(input, "R", StringComparison.OrdinalIgnoreCase))
+        {
+            var refreshed = await CollectStructuredDataAsync(page);
+            PrintExtractionToConsole(refreshed);
+            continue;
+        }
+
+        if (!int.TryParse(input, out var buttonIndex))
+        {
+            Console.WriteLine("Некорректный ввод. Укажите число, R или Q.");
+            continue;
+        }
+
+        var target = await page.EvaluateAsync<ClickTarget?>("""
+(index) => {
+  const text = (el) => (el?.textContent || '').replace(/\s+/g, ' ').trim();
+  const buttonCandidates = Array.from(document.querySelectorAll('button, [role="button"], .reply-markup-button, .Button'));
+  const visibleButtons = buttonCandidates.filter((btn) => {
+    const rect = btn.getBoundingClientRect();
+    const style = getComputedStyle(btn);
+    return rect.width > 0 && rect.height > 0 && style.visibility !== 'hidden' && style.display !== 'none';
+  });
+
+  const target = visibleButtons[index];
+  if (!target) return null;
+
+  const rect = target.getBoundingClientRect();
+  return {
+    x: rect.left + rect.width / 2,
+    y: rect.top + rect.height / 2,
+    label: text(target)
+  };
+}
+""", buttonIndex);
+
+        if (target is null)
+        {
+            Console.WriteLine($"Кнопка с индексом {buttonIndex} не найдена среди видимых.");
+            continue;
+        }
+
+        await page.Mouse.MoveAsync(target.X, target.Y);
+        await page.Mouse.DownAsync();
+        await page.Mouse.UpAsync();
+
+        Console.WriteLine($"Нажата кнопка [{buttonIndex}] '{target.Label}'.");
+    }
+}
+
+static void PrintArray(JsonElement source, string propertyName, string title)
+{
+    if (!source.TryGetProperty(propertyName, out var property) || property.ValueKind != JsonValueKind.Array)
+    {
+        return;
+    }
+
+    var values = property.EnumerateArray().Select(x => x.ToString()).Where(x => !string.IsNullOrWhiteSpace(x)).ToArray();
+    if (values.Length == 0)
+    {
+        Console.WriteLine($"{title}: нет");
+        return;
+    }
+
+    Console.WriteLine($"{title}: {string.Join(", ", values)}");
+}
+
+static string GetString(JsonElement source, string propertyName)
+{
+    return source.TryGetProperty(propertyName, out var value) && value.ValueKind == JsonValueKind.String
+        ? value.GetString() ?? string.Empty
+        : string.Empty;
+}
+
+static bool GetBool(JsonElement source, string propertyName)
+{
+    return source.TryGetProperty(propertyName, out var value) &&
+           (value.ValueKind == JsonValueKind.True || value.ValueKind == JsonValueKind.False) &&
+           value.GetBoolean();
+}
 
 static string ResolveYandexBrowserPath()
 {
@@ -148,4 +306,11 @@ static string ResolveYandexBrowserPath()
 
     throw new FileNotFoundException(
         "Не найден executable Яндекс Браузера. Укажите полный путь через переменную окружения YANDEX_BROWSER_PATH.");
+}
+
+file sealed class ClickTarget
+{
+    public required double X { get; init; }
+    public required double Y { get; init; }
+    public required string Label { get; init; }
 }
