@@ -31,7 +31,11 @@ var context = await browser.NewContextAsync(new BrowserNewContextOptions
 });
 
 var page = await context.NewPageAsync();
-await page.GotoAsync("https://web.telegram.org/k/", new PageGotoOptions { WaitUntil = WaitUntilState.NetworkIdle });
+await page.GotoAsync("https://web.telegram.org/k/", new PageGotoOptions
+{
+    WaitUntil = WaitUntilState.DOMContentLoaded,
+    Timeout = 0
+});
 
 Console.WriteLine("Telegram Web открыт в Яндекс Браузере.");
 Console.WriteLine("1) Войдите в аккаунт вручную.");
@@ -39,7 +43,7 @@ Console.WriteLine("2) Откройте CryptoBot.");
 Console.WriteLine("3) Нажмите ENTER здесь, когда будете готовы собрать структурированные данные...");
 Console.ReadLine();
 
-await page.WaitForLoadStateAsync(LoadState.NetworkIdle);
+await page.WaitForLoadStateAsync(LoadState.DOMContentLoaded, new PageWaitForLoadStateOptions { Timeout = 0 });
 
 var extractionResult = await page.EvaluateAsync<JsonElement>("""
 () => {
