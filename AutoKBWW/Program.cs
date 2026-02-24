@@ -126,6 +126,14 @@ async Task RunP2PAutomationAsync(IPage page)
 
     foreach (var expected in sequence)
     {
+        Console.WriteLine($"Жду 3 сек перед авто-нажатием '{expected}'...");
+        await WaitWithStopAsync(page, 3000);
+        if (stopAllRequested)
+        {
+            Console.WriteLine("Автоматизация остановлена клавишей S.");
+            return;
+        }
+
         var clicked = await ClickVisibleButtonByTextAsync(page, expected, startsWith: false);
         if (!clicked)
         {
@@ -151,6 +159,14 @@ async Task RunP2PAutomationAsync(IPage page)
     }
 
     Console.WriteLine($"Выбираю лучшее объявление: [{best.DisplayIndex}] {best.SourceLabel}");
+    Console.WriteLine("Жду 3 сек перед нажатием лучшего объявления...");
+    await WaitWithStopAsync(page, 3000);
+    if (stopAllRequested)
+    {
+        Console.WriteLine("Автоматизация остановлена клавишей S.");
+        return;
+    }
+
     var bestClicked = await ClickVisibleButtonByIndexAsync(page, best.DisplayIndex, isAutomation: true);
     if (!bestClicked)
     {
@@ -206,7 +222,7 @@ async Task<P2POffer?> FindBestOfferWithPagingAsync(IPage page, double marketPric
             lastNoDealNotifyAt = DateTimeOffset.UtcNow;
         }
 
-        Console.WriteLine("Подходящих объявлений нет. Жду 5 сек и нажимаю кнопку '· 1 ·' для следующего скана...");
+        Console.WriteLine("Подходящих объявлений нет. Жду 5 сек перед нажатием кнопки '· 1 ·'...");
         await WaitWithStopAsync(page, 5000);
         if (stopAllRequested)
         {
