@@ -4,7 +4,7 @@ using Microsoft.Playwright;
 var outputDirectory = Path.Combine(AppContext.BaseDirectory, "output");
 Directory.CreateDirectory(outputDirectory);
 
-await using var playwright = await Playwright.CreateAsync();
+using var playwright = await Playwright.CreateAsync();
 
 Console.WriteLine("Запускаю браузер...");
 await using var browser = await playwright.Chromium.LaunchAsync(new BrowserTypeLaunchOptions
