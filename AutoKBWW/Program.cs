@@ -6,30 +6,10 @@ Directory.CreateDirectory(outputDirectory);
 
 using var playwright = await Playwright.CreateAsync();
 
-Console.WriteLine("Запускаю Яндекс Браузер...");
-var yandexBrowserPath = ResolveYandexBrowserPath();
-Console.WriteLine($"Использую browser executable: {yandexBrowserPath}");
+var cdpUrl = Environment.GetEnvironmentVariable("TELEGRAM_CDP_URL");
 
-await using var browser = await playwright.Chromium.LaunchAsync(new BrowserTypeLaunchOptions
-{
-    Headless = false,
-    SlowMo = 60,
-    ExecutablePath = yandexBrowserPath,
-    Args =
-    [
-        "--start-maximized"
-    ]
-});
-
-var context = await browser.NewContextAsync(new BrowserNewContextOptions
-{
-    ViewportSize = new ViewportSize
-    {
-        Width = 1440,
-        Height = 900
-    }
-});
-
+await using var browser = await OpenBrowserAsync(playwright, cdpUrl);
+var context = await GetWorkingContextAsync(browser, cdpUrl);
 var page = await context.NewPageAsync();
 await page.GotoAsync("https://web.telegram.org/k/", new PageGotoOptions
 {
@@ -68,6 +48,55 @@ await RunInteractiveButtonClickLoopAsync(page);
 Console.WriteLine();
 Console.WriteLine("Нажмите ENTER для закрытия браузера...");
 Console.ReadLine();
+
+
+static async Task<IBrowser> OpenBrowserAsync(IPlaywright playwright, string? cdpUrl)
+{
+    if (!string.IsNullOrWhiteSpace(cdpUrl))
+    {
+        Console.WriteLine($"Подключаюсь к уже открытому браузеру по CDP: {cdpUrl}");
+        return await playwright.Chromium.ConnectOverCDPAsync(cdpUrl);
+    }
+
+    Console.WriteLine("TELEGRAM_CDP_URL не задан. Запускаю отдельный экземпляр Яндекс Браузера.");
+    Console.WriteLine("Чтобы работать в уже открытом браузере, запустите его с --remote-debugging-port и задайте TELEGRAM_CDP_URL.");
+
+    var yandexBrowserPath = ResolveYandexBrowserPath();
+    Console.WriteLine($"Использую browser executable: {yandexBrowserPath}");
+
+    return await playwright.Chromium.LaunchAsync(new BrowserTypeLaunchOptions
+    {
+        Headless = false,
+        SlowMo = 60,
+        ExecutablePath = yandexBrowserPath,
+        Args =
+        [
+            "--start-maximized"
+        ]
+    });
+}
+
+static async Task<IBrowserContext> GetWorkingContextAsync(IBrowser browser, string? cdpUrl)
+{
+    if (!string.IsNullOrWhiteSpace(cdpUrl))
+    {
+        var existing = browser.Contexts.FirstOrDefault();
+        if (existing is not null)
+        {
+            Console.WriteLine("Использую существующий контекст браузера (не инкогнито).");
+            return existing;
+        }
+    }
+
+    return await browser.NewContextAsync(new BrowserNewContextOptions
+    {
+        ViewportSize = new ViewportSize
+        {
+            Width = 1440,
+            Height = 900
+        }
+    });
+}
 
 static async Task<JsonElement> CollectStructuredDataAsync(IPage page)
 {
@@ -241,7 +270,7 @@ static async Task RunInteractiveButtonClickLoopAsync(IPage page)
             continue;
         }
 
-        await page.Mouse.MoveAsync(target.X, target.Y);
+        await page.Mouse.MoveAsync((float)target.X, (float)target.Y);
         await page.Mouse.DownAsync();
         await page.Mouse.UpAsync();
 
