@@ -126,6 +126,9 @@ async Task RunP2PAutomationAsync(IPage page)
     var notificationUsers = ReadNotificationUsers();
     Console.WriteLine($"Уведомления будут отправляться: {string.Join(", ", notificationUsers)}");
 
+    await NotifyUsersWithTextAsync(page, notificationUsers, "Запускаю авто-P2P поиск. Начинаю сканировать объявления.");
+    if (stopAllRequested) return;
+
     Console.WriteLine("Запускаю автоматизацию: P2P -> Купить -> Tether (USDT) -> СБП");
     var opened = await NavigateToSbpMenuAsync(page, includeP2p: true);
     if (!opened)
@@ -134,11 +137,23 @@ async Task RunP2PAutomationAsync(IPage page)
         return;
     }
 
+    async Task StopWithNotifyAsync(string reason)
+    {
+        Console.WriteLine(reason);
+        await NotifyUsersWithTextAsync(page, notificationUsers, "Авто-P2P остановлена (команда S).");
+    }
+
     while (!stopAllRequested)
     {
         var best = await FindBestOfferWithPagingAsync(page, targetPriceRub, volumeFilter, notificationUsers);
         if (best is null)
         {
+            if (stopAllRequested)
+            {
+                await StopWithNotifyAsync("Автоматизация остановлена клавишей S.");
+                return;
+            }
+
             Console.WriteLine("Объявления по заданным параметрам не найдены.");
             return;
         }
@@ -148,7 +163,7 @@ async Task RunP2PAutomationAsync(IPage page)
         await WaitWithStopAsync(page, 1000);
         if (stopAllRequested)
         {
-            Console.WriteLine("Автоматизация остановлена клавишей S.");
+            await StopWithNotifyAsync("Автоматизация остановлена клавишей S.");
             return;
         }
 
@@ -159,18 +174,31 @@ async Task RunP2PAutomationAsync(IPage page)
             continue;
         }
 
-        await ExecuteDealActionFlowAsync(page, best);
+        var actionFlowCompleted = await ExecuteDealActionFlowAsync(page, best);
         if (stopAllRequested)
         {
-            Console.WriteLine("Автоматизация остановлена клавишей S.");
+            await StopWithNotifyAsync("Автоматизация остановлена клавишей S.");
             return;
+        }
+
+        if (!actionFlowCompleted)
+        {
+            Console.WriteLine("Сделка не дошла до финального шага. Перезапускаю /p2p и продолжаю поиск.");
+            var restartedAfterActionFail = await RestartP2PAfterRejectedDealAsync(page);
+            if (!restartedAfterActionFail)
+            {
+                Console.WriteLine("Не удалось восстановить поиск после сбоя шагов сделки.");
+                return;
+            }
+
+            continue;
         }
 
         Console.WriteLine("Жду 2 сек после создания сделки, чтобы сообщение успело появиться...");
         await WaitWithStopAsync(page, 2000);
         if (stopAllRequested)
         {
-            Console.WriteLine("Автоматизация остановлена клавишей S.");
+            await StopWithNotifyAsync("Автоматизация остановлена клавишей S.");
             return;
         }
 
@@ -222,7 +250,7 @@ async Task RunP2PAutomationAsync(IPage page)
 
             if (outcome == DealOutcome.Stopped)
             {
-                Console.WriteLine("Ожидание итога сделки остановлено клавишей S.");
+                await StopWithNotifyAsync("Ожидание итога сделки остановлено клавишей S.");
                 return;
             }
 
@@ -333,19 +361,19 @@ async Task<DealOutcome> WaitForDealOutcomeAsync(IPage page)
     }
 }
 
-async Task ExecuteDealActionFlowAsync(IPage page, P2POffer best)
+async Task<bool> ExecuteDealActionFlowAsync(IPage page, P2POffer best)
 {
     Console.WriteLine("Готовлю действия по сделке: 'Купить' и финальная кнопка...");
 
     Console.WriteLine("Жду 1 сек перед нажатием 'Купить'...");
     await WaitWithStopAsync(page, 1000);
-    if (stopAllRequested) return;
+    if (stopAllRequested) return false;
 
     var buyClicked = await ClickDealActionButtonWithRetryAsync(page, "Купить");
     if (!buyClicked)
     {
         Console.WriteLine("Кнопка 'Купить' не найдена на экране сделки.");
-        return;
+        return false;
     }
 
     var isRangeOffer = best.VolumeMin is not null &&
@@ -356,27 +384,30 @@ async Task ExecuteDealActionFlowAsync(IPage page, P2POffer best)
 
     Console.WriteLine($"Жду 1 сек перед нажатием '{finalButton}'...");
     await WaitWithStopAsync(page, 1000);
-    if (stopAllRequested) return;
+    if (stopAllRequested) return false;
 
-    var finalClicked = await ClickDealActionButtonWithRetryAsync(page, finalButton);
-    if (!finalClicked)
-    {
-        Console.WriteLine($"Кнопка '{finalButton}' не найдена.");
-        return;
+        var finalClicked = await ClickDealActionButtonWithRetryAsync(page, finalButton);
+        if (!finalClicked)
+        {
+            Console.WriteLine($"Кнопка '{finalButton}' не найдена.");
+            return false;
     }
 
     if (isRangeOffer)
     {
         Console.WriteLine("Жду 1 сек перед нажатием 'Создать сделку'...");
         await WaitWithStopAsync(page, 1000);
-        if (stopAllRequested) return;
+        if (stopAllRequested) return false;
 
         var createDealClicked = await ClickDealActionButtonWithRetryAsync(page, "Создать сделку");
         if (!createDealClicked)
         {
             Console.WriteLine("Кнопка 'Создать сделку' не найдена после нажатия 'Макс.'.");
+            return false;
         }
     }
+
+    return true;
 }
 
 async Task<bool> ClickDealActionButtonWithRetryAsync(IPage page, string buttonText)
