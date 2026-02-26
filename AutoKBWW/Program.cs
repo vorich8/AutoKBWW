@@ -388,6 +388,12 @@ async Task<DealOutcome> WaitForDealOutcomeAsync(IPage page)
             return DealOutcome.Stopped;
         }
 
+        var fastSignal = await DetectDealOutcomeSignalAsync(page);
+        if (fastSignal != DealOutcome.Unknown)
+        {
+            return fastSignal;
+        }
+
         var dealInfo = await ExtractDealInfoAsync(page);
         var lower = dealInfo.MessageText?.ToLowerInvariant() ?? string.Empty;
         if (lower.Contains("продавец принял сделку")) return DealOutcome.Accepted;
@@ -402,6 +408,41 @@ async Task<DealOutcome> WaitForDealOutcomeAsync(IPage page)
 
         await WaitWithStopAsync(page, 1000);
     }
+}
+
+async Task<DealOutcome> DetectDealOutcomeSignalAsync(IPage page)
+{
+    var signal = await page.EvaluateAsync<string>("""
+() => {
+  const text = (el) => (el?.innerText || el?.textContent || '').replace(/\s+/g, ' ').trim().toLowerCase();
+
+  const actionButtons = Array.from(document.querySelectorAll('button, [role="button"], .reply-markup-button, .Button'));
+  if (actionButtons.some((b) => text(b).startsWith('посмотреть сделку'))) {
+    return 'accepted';
+  }
+
+  const messages = Array.from(document.querySelectorAll('.bubble, .message')).slice(-15);
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const t = text(messages[i]);
+    if (!t) continue;
+    if (t.includes('продавец принял сделку')) return 'accepted';
+    if (t.includes('продавец отказался от сделки')) return 'rejected';
+    if (t.includes('цена объявления изменилась') || t.includes('пришлите сумму сделки') || t.includes('попробуйте повторить попытку быстрее') || t.includes('в пределах от')) {
+      return 'needrestart';
+    }
+  }
+
+  return 'unknown';
+}
+""");
+
+    return signal switch
+    {
+        "accepted" => DealOutcome.Accepted,
+        "rejected" => DealOutcome.Rejected,
+        "needrestart" => DealOutcome.NeedRestart,
+        _ => DealOutcome.Unknown
+    };
 }
 
 bool HasDealCreationProblem(string lowerMessage)
@@ -1380,6 +1421,7 @@ static string ResolveYandexBrowserPath()
 
 enum DealOutcome
 {
+    Unknown,
     Accepted,
     Rejected,
     NeedRestart,
