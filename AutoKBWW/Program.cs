@@ -649,7 +649,7 @@ async Task<P2POffer?> FindBestOfferWithPagingAsync(IPage page, double targetPric
         PrintOffers(offers);
 
         var eligible = offers
-            .Where(x => x.Price <= targetPriceRub)
+            .Where(x => x.Price <= targetPriceRub + 0.0001)
             .Where(x => IsOfferVolumeSuitable(x, volumeFilter))
             .OrderBy(x => x.Price)
             .ToList();
@@ -659,6 +659,8 @@ async Task<P2POffer?> FindBestOfferWithPagingAsync(IPage page, double targetPric
             Console.WriteLine($"Найдено подходящее предложение: {best.RawPrice} ({best.Seller})");
             return best;
         }
+
+        PrintOfferFilterDebug(offers, targetPriceRub, volumeFilter);
 
         if (DateTimeOffset.UtcNow - lastNoDealNotifyAt >= TimeSpan.FromMinutes(5))
         {
@@ -881,6 +883,53 @@ static bool IsOfferVolumeSuitable(P2POffer offer, VolumeFilter filter)
     }
 
     return max >= filter.MinRub.Value;
+}
+
+static void PrintOfferFilterDebug(List<P2POffer> offers, double targetPriceRub, VolumeFilter filter)
+{
+    if (offers.Count == 0)
+    {
+        Console.WriteLine("Диагностика фильтра: офферов нет.");
+        return;
+    }
+
+    var pricePass = offers.Count(x => x.Price <= targetPriceRub + 0.0001);
+    var volumePass = offers.Count(x => IsOfferVolumeSuitable(x, filter));
+    var bothPass = offers.Count(x => x.Price <= targetPriceRub + 0.0001 && IsOfferVolumeSuitable(x, filter));
+
+    Console.WriteLine($"Диагностика фильтра: всего={offers.Count}, по цене={pricePass}, по объему={volumePass}, по обоим={bothPass}.");
+
+    foreach (var sample in offers.OrderBy(x => x.Price).Take(5))
+    {
+        var reason = GetOfferRejectReason(sample, targetPriceRub, filter);
+        Console.WriteLine($"  -> [{sample.DisplayIndex}] {sample.SourceLabel} | {reason}");
+    }
+}
+
+static string GetOfferRejectReason(P2POffer offer, double targetPriceRub, VolumeFilter filter)
+{
+    var priceOk = offer.Price <= targetPriceRub + 0.0001;
+    var volumeOk = IsOfferVolumeSuitable(offer, filter);
+
+    if (priceOk && volumeOk)
+    {
+        return "ПОДХОДИТ";
+    }
+
+    if (!priceOk && !volumeOk)
+    {
+        return $"цена {offer.Price.ToString(CultureInfo.InvariantCulture)} > лимита {targetPriceRub.ToString(CultureInfo.InvariantCulture)} и не проходит объем";
+    }
+
+    if (!priceOk)
+    {
+        return $"цена {offer.Price.ToString(CultureInfo.InvariantCulture)} > лимита {targetPriceRub.ToString(CultureInfo.InvariantCulture)}";
+    }
+
+    var min = offer.VolumeMin?.ToString(CultureInfo.InvariantCulture) ?? "?";
+    var max = (offer.VolumeMax ?? offer.VolumeMin)?.ToString(CultureInfo.InvariantCulture) ?? "?";
+    var filterMin = filter.MinRub?.ToString(CultureInfo.InvariantCulture) ?? "(без минимума)";
+    return $"не проходит объем: оффер [{min}..{max}], фильтр [{filterMin}..{filter.MaxRub.ToString(CultureInfo.InvariantCulture)}]";
 }
 
 bool CheckAndMarkStopSignal()
