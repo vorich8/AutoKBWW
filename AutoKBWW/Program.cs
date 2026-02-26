@@ -203,17 +203,30 @@ async Task RunP2PAutomationAsync(IPage page)
 
         if (!lower.Contains("продавец принял сделку"))
         {
-            Console.WriteLine("Подтверждение 'Продавец принял сделку' ещё не получено. Продолжаю проверять...");
-            var accepted = await WaitForSellerAcceptedAsync(page, timeoutMs: 30000);
-            if (!accepted)
+            Console.WriteLine("Жду итог сделки: 'Продавец принял сделку' или 'Продавец отказался от сделки'...");
+            var outcome = await WaitForDealOutcomeAsync(page);
+            if (outcome == DealOutcome.Rejected)
             {
-                Console.WriteLine("Подтверждение принятия сделки не получено в отведённое время. Возвращаюсь к поиску.");
+                await NotifyUsersWithTextAsync(page, notificationUsers, "Продавец отказался от сделки. Продолжаю искать новую.");
+                if (stopAllRequested) return;
+
                 var restarted = await RestartP2PAfterRejectedDealAsync(page);
-                if (!restarted) return;
+                if (!restarted)
+                {
+                    Console.WriteLine("Не удалось перезапустить /p2p после отказа продавца.");
+                    return;
+                }
+
                 continue;
             }
 
-            dealInfo = await ExtractDealInfoWithRescansAsync(page, maxAttempts: 10);
+            if (outcome == DealOutcome.Stopped)
+            {
+                Console.WriteLine("Ожидание итога сделки остановлено клавишей S.");
+                return;
+            }
+
+            dealInfo = await ExtractDealInfoWithRescansAsync(page, maxAttempts: 12);
             PrintDealInfo(dealInfo);
         }
 
@@ -294,23 +307,30 @@ async Task NotifyUsersWithTextAsync(IPage page, IReadOnlyList<string> users, str
     await WaitWithStopAsync(page, 2000);
 }
 
-async Task<bool> WaitForSellerAcceptedAsync(IPage page, int timeoutMs)
+async Task<DealOutcome> WaitForDealOutcomeAsync(IPage page)
 {
-    var elapsed = 0;
-    while (elapsed < timeoutMs)
+    var checkCounter = 0;
+
+    while (true)
     {
-        if (stopAllRequested) return false;
+        if (stopAllRequested)
+        {
+            return DealOutcome.Stopped;
+        }
 
         var dealInfo = await ExtractDealInfoAsync(page);
         var lower = dealInfo.MessageText?.ToLowerInvariant() ?? string.Empty;
-        if (lower.Contains("продавец принял сделку")) return true;
-        if (lower.Contains("продавец отказался от сделки")) return false;
+        if (lower.Contains("продавец принял сделку")) return DealOutcome.Accepted;
+        if (lower.Contains("продавец отказался от сделки")) return DealOutcome.Rejected;
+
+        checkCounter++;
+        if (checkCounter % 5 == 0)
+        {
+            Console.WriteLine("Итог сделки ещё не пришёл. Продолжаю ждать подтверждение/отказ...");
+        }
 
         await WaitWithStopAsync(page, 2000);
-        elapsed += 2000;
     }
-
-    return false;
 }
 
 async Task ExecuteDealActionFlowAsync(IPage page, P2POffer best)
@@ -1268,6 +1288,13 @@ static string ResolveYandexBrowserPath()
     }
 
     throw new FileNotFoundException("Не найден executable Яндекс Браузера. Укажите YANDEX_BROWSER_PATH.");
+}
+
+enum DealOutcome
+{
+    Accepted,
+    Rejected,
+    Stopped
 }
 
 file sealed class ClickTarget
