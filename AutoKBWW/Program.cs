@@ -313,14 +313,41 @@ async Task<bool> NavigateToSbpMenuAsync(IPage page, bool includeP2p)
 
     foreach (var expected in sequence)
     {
-        Console.WriteLine($"Жду 2 сек перед авто-нажатием '{expected}'...");
-        await WaitWithStopAsync(page, 2000);
-        if (stopAllRequested) return false;
+        var variants = expected switch
+        {
+            "P2P" => new[] { "P2P" },
+            "Купить" => new[] { "Купить", "Купить USDT" },
+            "Tether (USDT)" => new[] { "Tether (USDT)", "USDT", "Tether" },
+            "СБП" => new[] { "СБП" },
+            _ => new[] { expected }
+        };
 
-        var clicked = await ClickVisibleButtonByTextAsync(page, expected, startsWith: false, preferExact: true);
+        var clicked = false;
+        for (var attempt = 1; attempt <= 4 && !clicked; attempt++)
+        {
+            Console.WriteLine($"Жду 2 сек перед авто-нажатием '{expected}' (попытка {attempt}/4)...");
+            await WaitWithStopAsync(page, 2000);
+            if (stopAllRequested) return false;
+
+            foreach (var variant in variants)
+            {
+                if (await ClickVisibleButtonByTextAsync(page, variant, startsWith: true, preferExact: false))
+                {
+                    clicked = true;
+                    break;
+                }
+            }
+
+            if (!clicked)
+            {
+                await WaitWithStopAsync(page, 700);
+                if (stopAllRequested) return false;
+            }
+        }
+
         if (!clicked)
         {
-            Console.WriteLine($"Кнопка '{expected}' не найдена.");
+            Console.WriteLine($"Кнопка '{expected}' не найдена после нескольких попыток.");
             return false;
         }
 
@@ -465,7 +492,7 @@ async Task<bool> ExecuteDealActionFlowAsync(IPage page, P2POffer best)
     await WaitWithStopAsync(page, 700);
     if (stopAllRequested) return false;
 
-    var buyClicked = await ClickDealActionButtonWithRetryAsync(page, "Купить");
+    var buyClicked = await ClickAnyDealActionButtonWithRetryAsync(page, "Купить", "Купить USDT");
     if (!buyClicked)
     {
         Console.WriteLine("Кнопка 'Купить' не найдена на экране сделки.");
@@ -476,14 +503,14 @@ async Task<bool> ExecuteDealActionFlowAsync(IPage page, P2POffer best)
     await WaitWithStopAsync(page, 700);
     if (stopAllRequested) return false;
 
-    var maxClicked = await ClickDealActionButtonWithRetryAsync(page, "Макс.");
+    var maxClicked = await ClickAnyDealActionButtonWithRetryAsync(page, "Макс.", "Макс");
     if (maxClicked)
     {
         Console.WriteLine("Нажата 'Макс.'. Жду 0.7 сек перед нажатием 'Создать сделку'...");
         await WaitWithStopAsync(page, 700);
         if (stopAllRequested) return false;
 
-        var createAfterMaxClicked = await ClickDealActionButtonWithRetryAsync(page, "Создать сделку");
+        var createAfterMaxClicked = await ClickAnyDealActionButtonWithRetryAsync(page, "Создать сделку", "Создать");
         if (!createAfterMaxClicked)
         {
             Console.WriteLine("Кнопка 'Создать сделку' не найдена после нажатия 'Макс.'.");
@@ -498,7 +525,7 @@ async Task<bool> ExecuteDealActionFlowAsync(IPage page, P2POffer best)
     await WaitWithStopAsync(page, 700);
     if (stopAllRequested) return false;
 
-    var createDealClicked = await ClickDealActionButtonWithRetryAsync(page, "Создать сделку");
+    var createDealClicked = await ClickAnyDealActionButtonWithRetryAsync(page, "Создать сделку", "Создать");
     if (!createDealClicked)
     {
         Console.WriteLine("Кнопка 'Создать сделку' не найдена.");
@@ -524,6 +551,17 @@ async Task<bool> ClickDealActionButtonWithRetryAsync(IPage page, string buttonTe
         }
 
         await WaitWithStopAsync(page, 350);
+    }
+
+    return false;
+}
+
+async Task<bool> ClickAnyDealActionButtonWithRetryAsync(IPage page, params string[] buttonTexts)
+{
+    foreach (var text in buttonTexts)
+    {
+        var clicked = await ClickDealActionButtonWithRetryAsync(page, text);
+        if (clicked) return true;
     }
 
     return false;
@@ -574,8 +612,8 @@ async Task<P2POffer?> FindBestOfferWithPagingAsync(IPage page, double targetPric
             lastNoDealNotifyAt = DateTimeOffset.UtcNow;
         }
 
-        Console.WriteLine("Подходящих объявлений нет. Жду 2.5 сек перед нажатием кнопки '· 1 ·'...");
-        await WaitWithStopAsync(page, 2500);
+        Console.WriteLine("Подходящих объявлений нет. Жду 4.5 сек перед нажатием кнопки '· 1 ·'...");
+        await WaitWithStopAsync(page, 4500);
         if (stopAllRequested)
         {
             Console.WriteLine("Поиск остановлен клавишей S.");
@@ -589,7 +627,7 @@ async Task<P2POffer?> FindBestOfferWithPagingAsync(IPage page, double targetPric
             return null;
         }
 
-        await WaitWithStopAsync(page, 2500);
+        await WaitWithStopAsync(page, 4500);
         if (stopAllRequested)
         {
             Console.WriteLine("Поиск остановлен клавишей S.");
@@ -1213,6 +1251,7 @@ static async Task<bool> ClickVisibleButtonByTextAsync(IPage page, string expecte
     var target = await page.EvaluateAsync<ClickTarget?>("""
 (args) => {
   const normalize = (s) => (s || '').replace(/\s+/g, ' ').trim().toLowerCase();
+  const loose = (s) => normalize(s).replace(/[^\p{L}\p{N}]+/gu, '');
   const text = (el) => (el?.textContent || '').replace(/\s+/g, ' ').trim();
 
   const allVisibleButtons = Array.from(document.querySelectorAll('button, [role="button"], .reply-markup-button, .Button'))
@@ -1223,12 +1262,14 @@ static async Task<bool> ClickVisibleButtonByTextAsync(IPage page, string expecte
     });
 
   const expected = normalize(args.expectedText);
+  const expectedLoose = loose(args.expectedText);
   const matches = allVisibleButtons.filter((btn) => {
     const t = normalize(text(btn));
+    const tLoose = loose(text(btn));
     if (args.preferExact && t === expected) return true;
     if (args.containsOnly) return t.includes(expected);
-    if (args.startsWith) return t.startsWith(expected);
-    return t.includes(expected);
+    if (args.startsWith) return t.startsWith(expected) || (expectedLoose.length > 0 && tLoose.startsWith(expectedLoose));
+    return t.includes(expected) || (expectedLoose.length > 0 && tLoose.includes(expectedLoose));
   });
 
   if (!matches.length) return null;
