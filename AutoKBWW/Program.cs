@@ -164,8 +164,8 @@ async Task RunP2PAutomationAsync(IPage page)
     }
 
     Console.WriteLine($"Выбираю лучшее объявление: [{best.DisplayIndex}] {best.SourceLabel}");
-    Console.WriteLine("Жду 2 сек перед нажатием лучшего объявления...");
-    await WaitWithStopAsync(page, 2000);
+    Console.WriteLine("Жду 1 сек перед нажатием лучшего объявления...");
+    await WaitWithStopAsync(page, 1000);
     if (stopAllRequested)
     {
         Console.WriteLine("Автоматизация остановлена клавишей S.");
@@ -186,8 +186,8 @@ async Task RunP2PAutomationAsync(IPage page)
         return;
     }
 
-    Console.WriteLine("Жду 3 сек после создания сделки, чтобы сообщение успело появиться...");
-    await WaitWithStopAsync(page, 3000);
+    Console.WriteLine("Жду 2 сек после создания сделки, чтобы сообщение успело появиться...");
+    await WaitWithStopAsync(page, 2000);
     if (stopAllRequested)
     {
         Console.WriteLine("Автоматизация остановлена клавишей S.");
@@ -219,7 +219,7 @@ async Task ExecuteDealActionFlowAsync(IPage page, P2POffer best)
     await WaitWithStopAsync(page, 1000);
     if (stopAllRequested) return;
 
-    var buyClicked = await ClickVisibleButtonByTextAsync(page, "Купить", startsWith: true);
+    var buyClicked = await ClickDealActionButtonWithRetryAsync(page, "Купить");
     if (!buyClicked)
     {
         Console.WriteLine("Кнопка 'Купить' не найдена на экране сделки.");
@@ -236,7 +236,7 @@ async Task ExecuteDealActionFlowAsync(IPage page, P2POffer best)
     await WaitWithStopAsync(page, 1000);
     if (stopAllRequested) return;
 
-    var finalClicked = await ClickVisibleButtonByTextAsync(page, finalButton, startsWith: true);
+    var finalClicked = await ClickDealActionButtonWithRetryAsync(page, finalButton);
     if (!finalClicked)
     {
         Console.WriteLine($"Кнопка '{finalButton}' не найдена.");
@@ -249,12 +249,33 @@ async Task ExecuteDealActionFlowAsync(IPage page, P2POffer best)
         await WaitWithStopAsync(page, 1000);
         if (stopAllRequested) return;
 
-        var createDealClicked = await ClickVisibleButtonByTextAsync(page, "Создать сделку", startsWith: true);
+        var createDealClicked = await ClickDealActionButtonWithRetryAsync(page, "Создать сделку");
         if (!createDealClicked)
         {
             Console.WriteLine("Кнопка 'Создать сделку' не найдена после нажатия 'Макс.'.");
         }
     }
+}
+
+async Task<bool> ClickDealActionButtonWithRetryAsync(IPage page, string buttonText)
+{
+    for (var attempt = 1; attempt <= 4; attempt++)
+    {
+        if (stopAllRequested)
+        {
+            return false;
+        }
+
+        var clicked = await ClickVisibleButtonByTextAsync(page, buttonText, startsWith: true, preferExact: true);
+        if (clicked)
+        {
+            return true;
+        }
+
+        await WaitWithStopAsync(page, 600);
+    }
+
+    return false;
 }
 
 async Task<P2POffer?> FindBestOfferWithPagingAsync(IPage page, double targetPriceRub, VolumeFilter volumeFilter, IReadOnlyList<string> notificationUsers)
@@ -936,7 +957,7 @@ static async Task<bool> SendMessageToCurrentChatAsync(IPage page, string message
     return true;
 }
 
-static async Task<bool> ClickVisibleButtonByTextAsync(IPage page, string expectedText, bool startsWith, bool containsOnly = false)
+static async Task<bool> ClickVisibleButtonByTextAsync(IPage page, string expectedText, bool startsWith, bool containsOnly = false, bool preferExact = false)
 {
     var target = await page.EvaluateAsync<ClickTarget?>("""
 (args) => {
@@ -951,18 +972,34 @@ static async Task<bool> ClickVisibleButtonByTextAsync(IPage page, string expecte
     });
 
   const expected = normalize(args.expectedText);
-  const hit = allVisibleButtons.find((btn) => {
+  const matches = allVisibleButtons.filter((btn) => {
     const t = normalize(text(btn));
+    if (args.preferExact && t === expected) return true;
     if (args.containsOnly) return t.includes(expected);
     if (args.startsWith) return t.startsWith(expected);
     return t.includes(expected);
   });
 
-  if (!hit) return null;
+  if (!matches.length) return null;
+
+  const scored = matches
+    .map((btn) => {
+      const t = normalize(text(btn));
+      const rect = btn.getBoundingClientRect();
+      let score = 0;
+      if (t === expected) score += 1000;
+      if (t.startsWith(expected)) score += 500;
+      if (rect.top > window.innerHeight * 0.45) score += 200;
+      if (rect.width > 60 && rect.height > 20) score += 50;
+      return { btn, score, rect };
+    })
+    .sort((a, b) => b.score - a.score);
+
+  const hit = scored[0].btn;
   const rect = hit.getBoundingClientRect();
   return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2, label: text(hit) };
 }
-""", new { expectedText, startsWith, containsOnly });
+""", new { expectedText, startsWith, containsOnly, preferExact });
 
     if (target is null) return false;
 
