@@ -336,10 +336,14 @@ async Task NotifyFoundDealToUsersAsync(IPage page, IReadOnlyList<string> users, 
 {
     Console.WriteLine($"Отправляю найденное объявление пользователям: {string.Join(", ", users)}...");
 
-    var text = $"Найдена сделка:\n[{best.DisplayIndex}] {best.SourceLabel}\n\n{FormatDealMessage(dealInfo.MessageText)}";
+    var fullDealText = TryBuildFullDealNotificationText(best, dealInfo);
+    if (fullDealText is null)
+    {
+        Console.WriteLine("Полный текст сделки не собран. Уведомление НЕ отправлено, чтобы не слать неполные данные.");
+        return;
+    }
 
-
-
+    Console.WriteLine("Полный текст сделки сформирован. Отправляю одним сообщением.");
 
     foreach (var user in users)
     {
@@ -356,7 +360,7 @@ async Task NotifyFoundDealToUsersAsync(IPage page, IReadOnlyList<string> users, 
         await WaitWithStopAsync(page, 3000);
         if (stopAllRequested) return;
 
-        var sent = await SendMessageToCurrentChatAsync(page, text);
+        var sent = await SendMessageToCurrentChatAsync(page, fullDealText);
         if (!sent)
         {
             Console.WriteLine($"Не удалось отправить сообщение о найденной сделке в {user}.");
@@ -699,14 +703,24 @@ static async Task<DealInfo> ExtractDealInfoAsync(IPage page)
   const blockText = (el) => (el?.innerText || el?.textContent || '').replace(/\r/g, '').trim();
   const messages = Array.from(document.querySelectorAll('.bubble, .message'));
 
-  let dealMessage = '';
+  const candidates = [];
   for (let i = messages.length - 1; i >= 0; i--) {
     const t = blockText(messages[i].querySelector('.bubble-content-wrapper')) || blockText(messages[i]);
     if (t.toLowerCase().includes('объявление')) {
-      dealMessage = t;
-      break;
+      candidates.push(t);
     }
   }
+
+  const score = (t) => {
+    let s = t.length;
+    if (t.toLowerCase().includes('цена за 1 usdt')) s += 1000;
+    if (t.toLowerCase().includes('доступный объём')) s += 1000;
+    if (t.toLowerCase().includes('способ оплаты')) s += 1000;
+    if (t.toLowerCase().includes('условия сделки')) s += 1000;
+    return s;
+  };
+
+  const dealMessage = candidates.sort((a, b) => score(b) - score(a))[0] || '';
 
   const buyButton = Array.from(document.querySelectorAll('button, [role="button"], .reply-markup-button, .Button'))
     .find((btn) => text(btn).toLowerCase().startsWith('купить'));
@@ -719,6 +733,33 @@ static async Task<DealInfo> ExtractDealInfoAsync(IPage page)
 """);
 
     return data ?? new DealInfo { MessageText = string.Empty, ActionButtonLabel = "(не удалось извлечь)" };
+}
+
+static string? TryBuildFullDealNotificationText(P2POffer best, DealInfo dealInfo)
+{
+    var raw = dealInfo.MessageText?.Trim() ?? string.Empty;
+    if (string.IsNullOrWhiteSpace(raw))
+    {
+        return null;
+    }
+
+    var hasStart = raw.Contains("Объявление", StringComparison.OrdinalIgnoreCase);
+    var hasCoreFields = raw.Contains("Цена за 1 USDT", StringComparison.OrdinalIgnoreCase)
+                        || raw.Contains("Доступный объём", StringComparison.OrdinalIgnoreCase)
+                        || raw.Contains("Способ оплаты", StringComparison.OrdinalIgnoreCase);
+
+    if (!hasStart || !hasCoreFields)
+    {
+        return null;
+    }
+
+    var formatted = FormatDealMessage(raw);
+    if (string.IsNullOrWhiteSpace(formatted))
+    {
+        return null;
+    }
+
+    return $"Найдена сделка:\n[{best.DisplayIndex}] {best.SourceLabel}\n\n{formatted}";
 }
 
 static string FormatDealMessage(string message)
