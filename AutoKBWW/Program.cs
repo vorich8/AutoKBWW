@@ -221,6 +221,20 @@ async Task ExecuteDealActionFlowAsync(IPage page, P2POffer best)
     if (!finalClicked)
     {
         Console.WriteLine($"Кнопка '{finalButton}' не найдена.");
+        return;
+    }
+
+    if (isRangeOffer)
+    {
+        Console.WriteLine("Жду 1 сек перед нажатием 'Создать сделку'...");
+        await WaitWithStopAsync(page, 1000);
+        if (stopAllRequested) return;
+
+        var createDealClicked = await ClickVisibleButtonByTextAsync(page, "Создать сделку", startsWith: true);
+        if (!createDealClicked)
+        {
+            Console.WriteLine("Кнопка 'Создать сделку' не найдена после нажатия 'Макс.'.");
+        }
     }
 }
 
