@@ -159,8 +159,8 @@ async Task RunP2PAutomationAsync(IPage page)
         }
 
         Console.WriteLine($"Выбираю лучшее объявление: [{best.DisplayIndex}] {best.SourceLabel}");
-        Console.WriteLine("Жду 1 сек перед нажатием лучшего объявления...");
-        await WaitWithStopAsync(page, 1000);
+        Console.WriteLine("Жду 0.5 сек перед нажатием лучшего объявления...");
+        await WaitWithStopAsync(page, 500);
         if (stopAllRequested)
         {
             await StopWithNotifyAsync("Автоматизация остановлена клавишей S.");
@@ -416,6 +416,8 @@ bool HasDealCreationProblem(string lowerMessage)
 
 async Task<bool> ExecuteDealActionFlowAsync(IPage page, P2POffer best)
 {
+    _ = best;
+
     Console.WriteLine("Готовлю действия по сделке: 'Купить' и финальная кнопка...");
 
     Console.WriteLine("Жду 0.7 сек перед нажатием 'Купить'...");
@@ -429,35 +431,37 @@ async Task<bool> ExecuteDealActionFlowAsync(IPage page, P2POffer best)
         return false;
     }
 
-    var isRangeOffer = best.VolumeMin is not null &&
-                       best.VolumeMax is not null &&
-                       Math.Abs(best.VolumeMax.Value - best.VolumeMin.Value) > 0.001;
-
-    var finalButton = isRangeOffer ? "Макс." : "Создать сделку";
-
-    Console.WriteLine($"Жду 0.7 сек перед нажатием '{finalButton}'...");
+    Console.WriteLine("Жду 0.7 сек перед проверкой кнопки 'Макс.'...");
     await WaitWithStopAsync(page, 700);
     if (stopAllRequested) return false;
 
-        var finalClicked = await ClickDealActionButtonWithRetryAsync(page, finalButton);
-        if (!finalClicked)
-        {
-            Console.WriteLine($"Кнопка '{finalButton}' не найдена.");
-            return false;
-    }
-
-    if (isRangeOffer)
+    var maxClicked = await ClickDealActionButtonWithRetryAsync(page, "Макс.");
+    if (maxClicked)
     {
-        Console.WriteLine("Жду 0.7 сек перед нажатием 'Создать сделку'...");
+        Console.WriteLine("Нажата 'Макс.'. Жду 0.7 сек перед нажатием 'Создать сделку'...");
         await WaitWithStopAsync(page, 700);
         if (stopAllRequested) return false;
 
-        var createDealClicked = await ClickDealActionButtonWithRetryAsync(page, "Создать сделку");
-        if (!createDealClicked)
+        var createAfterMaxClicked = await ClickDealActionButtonWithRetryAsync(page, "Создать сделку");
+        if (!createAfterMaxClicked)
         {
             Console.WriteLine("Кнопка 'Создать сделку' не найдена после нажатия 'Макс.'.");
             return false;
         }
+
+        return true;
+    }
+
+    Console.WriteLine("Кнопка 'Макс.' не найдена. Пробую сразу нажать 'Создать сделку'...");
+    Console.WriteLine("Жду 0.7 сек перед нажатием 'Создать сделку'...");
+    await WaitWithStopAsync(page, 700);
+    if (stopAllRequested) return false;
+
+    var createDealClicked = await ClickDealActionButtonWithRetryAsync(page, "Создать сделку");
+    if (!createDealClicked)
+    {
+        Console.WriteLine("Кнопка 'Создать сделку' не найдена.");
+        return false;
     }
 
     return true;
