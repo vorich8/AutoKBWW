@@ -205,8 +205,8 @@ async Task RunP2PAutomationAsync(IPage page)
         var dealInfo = await ExtractDealInfoWithRescansAsync(page, maxAttempts: 20);
         if (string.IsNullOrWhiteSpace(dealInfo.MessageText))
         {
-            Console.WriteLine("Сообщение сделки пока пустое. Жду 4 сек и делаю повторный сбор...");
-            await WaitWithStopAsync(page, 4000);
+            Console.WriteLine("Сообщение сделки пока пустое. Жду 2.5 сек и делаю повторный сбор...");
+            await WaitWithStopAsync(page, 2500);
             if (stopAllRequested) return;
             dealInfo = await ExtractDealInfoWithRescansAsync(page, maxAttempts: 12);
         }
@@ -406,7 +406,7 @@ async Task<DealOutcome> WaitForDealOutcomeAsync(IPage page)
             Console.WriteLine("Итог сделки ещё не пришёл. Продолжаю ждать подтверждение/отказ...");
         }
 
-        await WaitWithStopAsync(page, 1000);
+        await WaitWithStopAsync(page, 700);
     }
 }
 
@@ -574,8 +574,8 @@ async Task<P2POffer?> FindBestOfferWithPagingAsync(IPage page, double targetPric
             lastNoDealNotifyAt = DateTimeOffset.UtcNow;
         }
 
-        Console.WriteLine("Подходящих объявлений нет. Жду 4 сек перед нажатием кнопки '· 1 ·'...");
-        await WaitWithStopAsync(page, 4000);
+        Console.WriteLine("Подходящих объявлений нет. Жду 2.5 сек перед нажатием кнопки '· 1 ·'...");
+        await WaitWithStopAsync(page, 2500);
         if (stopAllRequested)
         {
             Console.WriteLine("Поиск остановлен клавишей S.");
@@ -589,7 +589,7 @@ async Task<P2POffer?> FindBestOfferWithPagingAsync(IPage page, double targetPric
             return null;
         }
 
-        await WaitWithStopAsync(page, 4000);
+        await WaitWithStopAsync(page, 2500);
         if (stopAllRequested)
         {
             Console.WriteLine("Поиск остановлен клавишей S.");
@@ -1020,7 +1020,7 @@ static async Task<DealInfo> ExtractDealInfoWithRescansAsync(IPage page, int maxA
             return current;
         }
 
-        await page.WaitForTimeoutAsync(1200);
+        await page.WaitForTimeoutAsync(500);
     }
 
     return best ?? new DealInfo { MessageText = string.Empty, ActionButtonLabel = "(не удалось извлечь)" };
