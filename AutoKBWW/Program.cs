@@ -131,8 +131,8 @@ async Task RunP2PAutomationAsync(IPage page)
 
     foreach (var expected in sequence)
     {
-        Console.WriteLine($"Жду 3 сек перед авто-нажатием '{expected}'...");
-        await WaitWithStopAsync(page, 3000);
+        Console.WriteLine($"Жду 2 сек перед авто-нажатием '{expected}'...");
+        await WaitWithStopAsync(page, 2000);
         if (stopAllRequested)
         {
             Console.WriteLine("Автоматизация остановлена клавишей S.");
@@ -146,8 +146,8 @@ async Task RunP2PAutomationAsync(IPage page)
             return;
         }
 
-        Console.WriteLine($"Авто-нажатие: '{expected}' выполнено. Жду 3 сек...");
-        await WaitWithStopAsync(page, 3000);
+        Console.WriteLine($"Авто-нажатие: '{expected}' выполнено. Жду 2 сек...");
+        await WaitWithStopAsync(page, 2000);
         if (stopAllRequested)
         {
             Console.WriteLine("Автоматизация остановлена клавишей S.");
@@ -164,8 +164,8 @@ async Task RunP2PAutomationAsync(IPage page)
     }
 
     Console.WriteLine($"Выбираю лучшее объявление: [{best.DisplayIndex}] {best.SourceLabel}");
-    Console.WriteLine("Жду 3 сек перед нажатием лучшего объявления...");
-    await WaitWithStopAsync(page, 3000);
+    Console.WriteLine("Жду 2 сек перед нажатием лучшего объявления...");
+    await WaitWithStopAsync(page, 2000);
     if (stopAllRequested)
     {
         Console.WriteLine("Автоматизация остановлена клавишей S.");
@@ -196,8 +196,8 @@ async Task ExecuteDealActionFlowAsync(IPage page, P2POffer best)
 {
     Console.WriteLine("Готовлю действия по сделке: 'Купить' и финальная кнопка...");
 
-    Console.WriteLine("Жду 3 сек перед нажатием 'Купить'...");
-    await WaitWithStopAsync(page, 3000);
+    Console.WriteLine("Жду 2 сек перед нажатием 'Купить'...");
+    await WaitWithStopAsync(page, 2000);
     if (stopAllRequested) return;
 
     var buyClicked = await ClickVisibleButtonByTextAsync(page, "Купить", startsWith: true);
@@ -213,8 +213,8 @@ async Task ExecuteDealActionFlowAsync(IPage page, P2POffer best)
 
     var finalButton = isRangeOffer ? "Макс." : "Создать сделку";
 
-    Console.WriteLine($"Жду 3 сек перед нажатием '{finalButton}'...");
-    await WaitWithStopAsync(page, 3000);
+    Console.WriteLine($"Жду 2 сек перед нажатием '{finalButton}'...");
+    await WaitWithStopAsync(page, 2000);
     if (stopAllRequested) return;
 
     var finalClicked = await ClickVisibleButtonByTextAsync(page, finalButton, startsWith: true);
@@ -269,8 +269,8 @@ async Task<P2POffer?> FindBestOfferWithPagingAsync(IPage page, double targetPric
             lastNoDealNotifyAt = DateTimeOffset.UtcNow;
         }
 
-        Console.WriteLine("Подходящих объявлений нет. Жду 5 сек перед нажатием кнопки '· 1 ·'...");
-        await WaitWithStopAsync(page, 5000);
+        Console.WriteLine("Подходящих объявлений нет. Жду 4 сек перед нажатием кнопки '· 1 ·'...");
+        await WaitWithStopAsync(page, 4000);
         if (stopAllRequested)
         {
             Console.WriteLine("Поиск остановлен клавишей S.");
@@ -284,7 +284,7 @@ async Task<P2POffer?> FindBestOfferWithPagingAsync(IPage page, double targetPric
             return null;
         }
 
-        await WaitWithStopAsync(page, 5000);
+        await WaitWithStopAsync(page, 4000);
         if (stopAllRequested)
         {
             Console.WriteLine("Поиск остановлен клавишей S.");
@@ -299,7 +299,7 @@ async Task SendNoDealsNotificationAsync(IPage page, IReadOnlyList<string> users)
 
     foreach (var user in users)
     {
-        await WaitWithStopAsync(page, 3000);
+        await WaitWithStopAsync(page, 2000);
         if (stopAllRequested) return;
 
         var openedUser = await ClickChatByTitleAsync(page, user);
@@ -309,7 +309,7 @@ async Task SendNoDealsNotificationAsync(IPage page, IReadOnlyList<string> users)
             continue;
         }
 
-        await WaitWithStopAsync(page, 3000);
+        await WaitWithStopAsync(page, 2000);
         if (stopAllRequested) return;
 
         var sent = await SendMessageToCurrentChatAsync(page, "Пока сделок нет. Продолжаю поиски..");
@@ -319,7 +319,7 @@ async Task SendNoDealsNotificationAsync(IPage page, IReadOnlyList<string> users)
         }
     }
 
-    await WaitWithStopAsync(page, 3000);
+    await WaitWithStopAsync(page, 2000);
     if (stopAllRequested) return;
 
     var backToBot = await ClickChatByTitleAsync(page, "Crypto");
@@ -329,7 +329,7 @@ async Task SendNoDealsNotificationAsync(IPage page, IReadOnlyList<string> users)
         return;
     }
 
-    await WaitWithStopAsync(page, 3000);
+    await WaitWithStopAsync(page, 2000);
 }
 
 async Task NotifyFoundDealToUsersAsync(IPage page, IReadOnlyList<string> users, P2POffer best, DealInfo dealInfo)
@@ -347,7 +347,7 @@ async Task NotifyFoundDealToUsersAsync(IPage page, IReadOnlyList<string> users, 
 
     foreach (var user in users)
     {
-        await WaitWithStopAsync(page, 3000);
+        await WaitWithStopAsync(page, 2000);
         if (stopAllRequested) return;
 
         var openedUser = await ClickChatByTitleAsync(page, user);
@@ -357,7 +357,7 @@ async Task NotifyFoundDealToUsersAsync(IPage page, IReadOnlyList<string> users, 
             continue;
         }
 
-        await WaitWithStopAsync(page, 3000);
+        await WaitWithStopAsync(page, 2000);
         if (stopAllRequested) return;
 
         var sent = await SendMessageToCurrentChatAsync(page, fullDealText);
@@ -367,7 +367,7 @@ async Task NotifyFoundDealToUsersAsync(IPage page, IReadOnlyList<string> users, 
         }
     }
 
-    await WaitWithStopAsync(page, 3000);
+    await WaitWithStopAsync(page, 2000);
     if (stopAllRequested) return;
 
     var backToBot = await ClickChatByTitleAsync(page, "Crypto");
@@ -377,7 +377,7 @@ async Task NotifyFoundDealToUsersAsync(IPage page, IReadOnlyList<string> users, 
         return;
     }
 
-    await WaitWithStopAsync(page, 3000);
+    await WaitWithStopAsync(page, 2000);
 }
 
 IReadOnlyList<string> ReadNotificationUsers()
@@ -852,7 +852,7 @@ static async Task<bool> SendMessageToCurrentChatAsync(IPage page, string message
     // Важно: InsertText вставляет весь текст сразу (включая переносы строк)
     // без по-символьных Enter, чтобы не отправлять сообщения частями.
     await page.Keyboard.InsertTextAsync(message);
-    await page.WaitForTimeoutAsync(300);
+    await page.WaitForTimeoutAsync(200);
     await page.Keyboard.PressAsync("Enter");
     return true;
 }
@@ -933,7 +933,7 @@ static async Task<bool> ClickVisibleButtonByIndexAsync(IPage page, int displayIn
 
     if (isAutomation)
     {
-        await page.WaitForTimeoutAsync(3000);
+        await page.WaitForTimeoutAsync(2000);
     }
 
     return true;
