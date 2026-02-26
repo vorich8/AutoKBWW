@@ -186,7 +186,7 @@ async Task RunP2PAutomationAsync(IPage page)
         return;
     }
 
-    var dealInfo = await ExtractDealInfoAsync(page);
+    var dealInfo = await ExtractDealInfoWithRescansAsync(page, maxAttempts: 8);
     PrintDealInfo(dealInfo);
 
     await NotifyFoundDealToUsersAsync(page, notificationUsers, best, dealInfo);
@@ -196,8 +196,8 @@ async Task ExecuteDealActionFlowAsync(IPage page, P2POffer best)
 {
     Console.WriteLine("Готовлю действия по сделке: 'Купить' и финальная кнопка...");
 
-    Console.WriteLine("Жду 2 сек перед нажатием 'Купить'...");
-    await WaitWithStopAsync(page, 2000);
+    Console.WriteLine("Жду 1 сек перед нажатием 'Купить'...");
+    await WaitWithStopAsync(page, 1000);
     if (stopAllRequested) return;
 
     var buyClicked = await ClickVisibleButtonByTextAsync(page, "Купить", startsWith: true);
@@ -213,8 +213,8 @@ async Task ExecuteDealActionFlowAsync(IPage page, P2POffer best)
 
     var finalButton = isRangeOffer ? "Макс." : "Создать сделку";
 
-    Console.WriteLine($"Жду 2 сек перед нажатием '{finalButton}'...");
-    await WaitWithStopAsync(page, 2000);
+    Console.WriteLine($"Жду 1 сек перед нажатием '{finalButton}'...");
+    await WaitWithStopAsync(page, 1000);
     if (stopAllRequested) return;
 
     var finalClicked = await ClickVisibleButtonByTextAsync(page, finalButton, startsWith: true);
@@ -693,6 +693,49 @@ static void PrintDealInfo(DealInfo info)
     Console.WriteLine(string.IsNullOrWhiteSpace(info.MessageText) ? "Сообщение сделки не найдено." : FormatDealMessage(info.MessageText));
     Console.WriteLine($"Кнопка действия: {info.ActionButtonLabel}");
     Console.WriteLine("=== КОНЕЦ ИНФО ===");
+}
+
+static async Task<DealInfo> ExtractDealInfoWithRescansAsync(IPage page, int maxAttempts)
+{
+    DealInfo? best = null;
+
+    for (var attempt = 1; attempt <= maxAttempts; attempt++)
+    {
+        var current = await ExtractDealInfoAsync(page);
+
+        var currentScore = ScoreDealMessage(current.MessageText);
+        var bestScore = ScoreDealMessage(best?.MessageText ?? string.Empty);
+        if (best is null || currentScore > bestScore)
+        {
+            best = current;
+        }
+
+        if (currentScore >= 4)
+        {
+            return current;
+        }
+
+        await page.WaitForTimeoutAsync(800);
+    }
+
+    return best ?? new DealInfo { MessageText = string.Empty, ActionButtonLabel = "(не удалось извлечь)" };
+}
+
+static int ScoreDealMessage(string message)
+{
+    if (string.IsNullOrWhiteSpace(message))
+    {
+        return 0;
+    }
+
+    var score = 0;
+    if (message.Contains("Объявление", StringComparison.OrdinalIgnoreCase)) score++;
+    if (message.Contains("Цена за 1 USDT", StringComparison.OrdinalIgnoreCase)) score++;
+    if (message.Contains("Доступный объём", StringComparison.OrdinalIgnoreCase)) score++;
+    if (message.Contains("Способ оплаты", StringComparison.OrdinalIgnoreCase)) score++;
+    if (message.Contains("Условия сделки", StringComparison.OrdinalIgnoreCase)) score++;
+
+    return score;
 }
 
 static async Task<DealInfo> ExtractDealInfoAsync(IPage page)
