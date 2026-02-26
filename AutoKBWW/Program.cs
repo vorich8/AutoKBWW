@@ -195,7 +195,7 @@ async Task RunP2PAutomationAsync(IPage page)
         }
 
         Console.WriteLine("Жду 2 сек после создания сделки, чтобы сообщение успело появиться...");
-        await WaitWithStopAsync(page, 2000);
+        await WaitWithStopAsync(page, 1000);
         if (stopAllRequested)
         {
             await StopWithNotifyAsync("Автоматизация остановлена клавишей S.");
@@ -271,9 +271,38 @@ async Task RunP2PAutomationAsync(IPage page)
             PrintDealInfo(dealInfo);
         }
 
+        var acceptedByText = (dealInfo.MessageText ?? string.Empty)
+            .Contains("продавец принял сделку", StringComparison.OrdinalIgnoreCase);
+        if (acceptedByText)
+        {
+            dealInfo = await OpenAcceptedDealDetailsAsync(page);
+            PrintDealInfo(dealInfo);
+        }
+
         await NotifyFoundDealToUsersAsync(page, notificationUsers, best, dealInfo);
         return;
     }
+}
+
+async Task<DealInfo> OpenAcceptedDealDetailsAsync(IPage page)
+{
+    Console.WriteLine("Сделка принята. Пробую открыть карточку кнопкой 'Посмотреть сделку'...");
+
+    await WaitWithStopAsync(page, 1000);
+    if (stopAllRequested) return new DealInfo { MessageText = string.Empty, ActionButtonLabel = "(остановлено)" };
+
+    var opened = await ClickVisibleButtonByTextAsync(page, "Посмотреть сделку", startsWith: true, preferExact: true);
+    if (!opened)
+    {
+        Console.WriteLine("Кнопка 'Посмотреть сделку' не найдена. Собираю текущий текст сделки.");
+        return await ExtractDealInfoWithRescansAsync(page, maxAttempts: 24);
+    }
+
+    Console.WriteLine("Нажата кнопка 'Посмотреть сделку'. Жду 1 сек и собираю полное сообщение сделки...");
+    await WaitWithStopAsync(page, 1000);
+    if (stopAllRequested) return new DealInfo { MessageText = string.Empty, ActionButtonLabel = "(остановлено)" };
+
+    return await ExtractDealInfoWithRescansAsync(page, maxAttempts: 30);
 }
 
 async Task<bool> NavigateToSbpMenuAsync(IPage page, bool includeP2p)
@@ -366,12 +395,12 @@ async Task<DealOutcome> WaitForDealOutcomeAsync(IPage page)
         if (HasDealCreationProblem(lower)) return DealOutcome.NeedRestart;
 
         checkCounter++;
-        if (checkCounter % 5 == 0)
+        if (checkCounter % 3 == 0)
         {
             Console.WriteLine("Итог сделки ещё не пришёл. Продолжаю ждать подтверждение/отказ...");
         }
 
-        await WaitWithStopAsync(page, 2000);
+        await WaitWithStopAsync(page, 1000);
     }
 }
 
