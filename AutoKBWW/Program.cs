@@ -186,7 +186,15 @@ async Task RunP2PAutomationAsync(IPage page)
         return;
     }
 
-    var dealInfo = await ExtractDealInfoWithRescansAsync(page, maxAttempts: 8);
+    Console.WriteLine("Жду 3 сек после создания сделки, чтобы сообщение успело появиться...");
+    await WaitWithStopAsync(page, 3000);
+    if (stopAllRequested)
+    {
+        Console.WriteLine("Автоматизация остановлена клавишей S.");
+        return;
+    }
+
+    var dealInfo = await ExtractDealInfoWithRescansAsync(page, maxAttempts: 10);
     PrintDealInfo(dealInfo);
 
     await NotifyFoundDealToUsersAsync(page, notificationUsers, best, dealInfo);
