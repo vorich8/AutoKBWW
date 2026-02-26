@@ -484,7 +484,11 @@ bool HasDealCreationProblem(string lowerMessage)
 
 async Task<bool> ExecuteDealActionFlowAsync(IPage page, P2POffer best)
 {
-    _ = best;
+    if (best is null)
+    {
+        Console.WriteLine("Ошибка: выбранное объявление отсутствует (null). Отменяю шаги сделки.");
+        return false;
+    }
 
     Console.WriteLine($"Готовлю действия по сделке для объявления: [{best.DisplayIndex}] {best.SourceLabel}");
     await LogVisibleButtonsAsync(page, "Кнопки после открытия объявления");
@@ -564,21 +568,29 @@ async Task<bool> ClickDealActionButtonWithRetryAsync(IPage page, string buttonTe
 
 async Task LogVisibleButtonsAsync(IPage page, string title)
 {
-    var buttons = await CollectVisibleButtonsAsync(page);
-    Console.WriteLine($"=== {title} ===");
-    if (buttons.Count == 0)
+    try
     {
-        Console.WriteLine("Видимых кнопок не найдено.");
-    }
-    else
-    {
-        for (var i = 0; i < buttons.Count; i++)
+        var buttons = await CollectVisibleButtonsAsync(page);
+        Console.WriteLine($"=== {title} ===");
+        if (buttons is null || buttons.Count == 0)
         {
-            Console.WriteLine($"  ({i}) '{buttons[i].Label}'");
+            Console.WriteLine("Видимых кнопок не найдено.");
         }
-    }
+        else
+        {
+            for (var i = 0; i < buttons.Count; i++)
+            {
+                var label = buttons[i]?.Label;
+                Console.WriteLine($"  ({i}) '{(string.IsNullOrWhiteSpace(label) ? "(пусто)" : label)}'");
+            }
+        }
 
-    Console.WriteLine("=== КОНЕЦ СПИСКА КНОПОК ===");
+        Console.WriteLine("=== КОНЕЦ СПИСКА КНОПОК ===");
+    }
+    catch (Exception ex)
+    {
+        Console.WriteLine($"Не удалось собрать список видимых кнопок: {ex.GetType().Name}: {ex.Message}");
+    }
 }
 
 static async Task<List<ButtonDebugInfo>> CollectVisibleButtonsAsync(IPage page)
@@ -593,13 +605,14 @@ static async Task<List<ButtonDebugInfo>> CollectVisibleButtonsAsync(IPage page)
       return rect.width > 0 && rect.height > 0 && style.visibility !== 'hidden' && style.display !== 'none';
     })
     .map((btn) => text(btn))
-    .filter((t) => t.length > 0)
+    .filter((t) => typeof t === 'string' && t.length > 0)
     .slice(-40);
 }
 """);
 
     return (buttons ?? new List<string>())
-        .Select(label => new ButtonDebugInfo { Label = label })
+        .Where(label => !string.IsNullOrWhiteSpace(label))
+        .Select(label => new ButtonDebugInfo { Label = label! })
         .ToList();
 }
 
