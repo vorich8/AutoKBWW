@@ -570,7 +570,7 @@ async Task LogVisibleButtonsAsync(IPage page, string title)
 {
     try
     {
-        var buttons = await CollectVisibleButtonsAsync(page);
+        var buttons = await CollectVisibleButtonsWithTimeoutAsync(page, timeoutMs: 1200);
         Console.WriteLine($"=== {title} ===");
         if (buttons is null || buttons.Count == 0)
         {
@@ -591,6 +591,19 @@ async Task LogVisibleButtonsAsync(IPage page, string title)
     {
         Console.WriteLine($"Не удалось собрать список видимых кнопок: {ex.GetType().Name}: {ex.Message}");
     }
+}
+
+async Task<List<ButtonDebugInfo>> CollectVisibleButtonsWithTimeoutAsync(IPage page, int timeoutMs)
+{
+    var collectTask = CollectVisibleButtonsAsync(page);
+    var completed = await Task.WhenAny(collectTask, Task.Delay(timeoutMs));
+    if (completed != collectTask)
+    {
+        Console.WriteLine($"Сбор видимых кнопок занял слишком долго ({timeoutMs}ms). Пропускаю debug-список.");
+        return new List<ButtonDebugInfo>();
+    }
+
+    return await collectTask;
 }
 
 static async Task<List<ButtonDebugInfo>> CollectVisibleButtonsAsync(IPage page)
