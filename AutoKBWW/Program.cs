@@ -194,8 +194,19 @@ async Task RunP2PAutomationAsync(IPage page)
         return;
     }
 
-    var dealInfo = await ExtractDealInfoWithRescansAsync(page, maxAttempts: 10);
+    var dealInfo = await ExtractDealInfoWithRescansAsync(page, maxAttempts: 20);
     PrintDealInfo(dealInfo);
+
+    if (string.IsNullOrWhiteSpace(dealInfo.MessageText))
+    {
+        Console.WriteLine("Сообщение сделки пока пустое. Жду 4 сек и делаю повторный сбор...");
+        await WaitWithStopAsync(page, 4000);
+        if (!stopAllRequested)
+        {
+            dealInfo = await ExtractDealInfoWithRescansAsync(page, maxAttempts: 12);
+            PrintDealInfo(dealInfo);
+        }
+    }
 
     await NotifyFoundDealToUsersAsync(page, notificationUsers, best, dealInfo);
 }
@@ -737,7 +748,7 @@ static async Task<DealInfo> ExtractDealInfoWithRescansAsync(IPage page, int maxA
             return current;
         }
 
-        await page.WaitForTimeoutAsync(800);
+        await page.WaitForTimeoutAsync(1200);
     }
 
     return best ?? new DealInfo { MessageText = string.Empty, ActionButtonLabel = "(не удалось извлечь)" };
@@ -751,8 +762,8 @@ static int ScoreDealMessage(string message)
     }
 
     var score = 0;
-    if (message.Contains("Объявление", StringComparison.OrdinalIgnoreCase)) score++;
-    if (message.Contains("Цена за 1 USDT", StringComparison.OrdinalIgnoreCase)) score++;
+    if (message.Contains("Объявление", StringComparison.OrdinalIgnoreCase) || message.Contains("Сделка #", StringComparison.OrdinalIgnoreCase)) score++;
+    if (message.Contains("Цена за 1 USDT", StringComparison.OrdinalIgnoreCase) || message.Contains("Покупаете", StringComparison.OrdinalIgnoreCase)) score++;
     if (message.Contains("Доступный объём", StringComparison.OrdinalIgnoreCase)) score++;
     if (message.Contains("Способ оплаты", StringComparison.OrdinalIgnoreCase)) score++;
     if (message.Contains("Условия сделки", StringComparison.OrdinalIgnoreCase)) score++;
@@ -771,21 +782,22 @@ static async Task<DealInfo> ExtractDealInfoAsync(IPage page)
   const candidates = [];
   for (let i = messages.length - 1; i >= 0; i--) {
     const t = blockText(messages[i].querySelector('.bubble-content-wrapper')) || blockText(messages[i]);
-    if (t.toLowerCase().includes('объявление')) {
+    if (t.toLowerCase().includes('объявление') || t.toLowerCase().includes('сделка #')) {
       candidates.push(t);
     }
   }
 
   const score = (t) => {
     let s = t.length;
-    if (t.toLowerCase().includes('цена за 1 usdt')) s += 1000;
+    if (t.toLowerCase().includes('цена за 1 usdt') || t.toLowerCase().includes('покупаете')) s += 1000;
     if (t.toLowerCase().includes('доступный объём')) s += 1000;
     if (t.toLowerCase().includes('способ оплаты')) s += 1000;
     if (t.toLowerCase().includes('условия сделки')) s += 1000;
     return s;
   };
 
-  const dealMessage = candidates.sort((a, b) => score(b) - score(a))[0] || '';
+  const fallback = blockText(messages[messages.length - 1]?.querySelector('.bubble-content-wrapper')) || blockText(messages[messages.length - 1]);
+  const dealMessage = candidates.sort((a, b) => score(b) - score(a))[0] || fallback || '';
 
   const buyButton = Array.from(document.querySelectorAll('button, [role="button"], .reply-markup-button, .Button'))
     .find((btn) => text(btn).toLowerCase().startsWith('купить'));
@@ -808,10 +820,12 @@ static string? TryBuildFullDealNotificationText(P2POffer best, DealInfo dealInfo
         return null;
     }
 
-    var hasStart = raw.Contains("Объявление", StringComparison.OrdinalIgnoreCase);
+    var hasStart = raw.Contains("Объявление", StringComparison.OrdinalIgnoreCase) || raw.Contains("Сделка #", StringComparison.OrdinalIgnoreCase);
     var hasCoreFields = raw.Contains("Цена за 1 USDT", StringComparison.OrdinalIgnoreCase)
                         || raw.Contains("Доступный объём", StringComparison.OrdinalIgnoreCase)
-                        || raw.Contains("Способ оплаты", StringComparison.OrdinalIgnoreCase);
+                        || raw.Contains("Способ оплаты", StringComparison.OrdinalIgnoreCase)
+                        || raw.Contains("Покупаете", StringComparison.OrdinalIgnoreCase)
+                        || raw.Contains("Платите", StringComparison.OrdinalIgnoreCase);
 
     if (!hasStart || !hasCoreFields)
     {
