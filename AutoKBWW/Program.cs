@@ -418,8 +418,8 @@ async Task<bool> ExecuteDealActionFlowAsync(IPage page, P2POffer best)
 {
     Console.WriteLine("Готовлю действия по сделке: 'Купить' и финальная кнопка...");
 
-    Console.WriteLine("Жду 1 сек перед нажатием 'Купить'...");
-    await WaitWithStopAsync(page, 1000);
+    Console.WriteLine("Жду 0.7 сек перед нажатием 'Купить'...");
+    await WaitWithStopAsync(page, 700);
     if (stopAllRequested) return false;
 
     var buyClicked = await ClickDealActionButtonWithRetryAsync(page, "Купить");
@@ -435,8 +435,8 @@ async Task<bool> ExecuteDealActionFlowAsync(IPage page, P2POffer best)
 
     var finalButton = isRangeOffer ? "Макс." : "Создать сделку";
 
-    Console.WriteLine($"Жду 1 сек перед нажатием '{finalButton}'...");
-    await WaitWithStopAsync(page, 1000);
+    Console.WriteLine($"Жду 0.7 сек перед нажатием '{finalButton}'...");
+    await WaitWithStopAsync(page, 700);
     if (stopAllRequested) return false;
 
         var finalClicked = await ClickDealActionButtonWithRetryAsync(page, finalButton);
@@ -448,8 +448,8 @@ async Task<bool> ExecuteDealActionFlowAsync(IPage page, P2POffer best)
 
     if (isRangeOffer)
     {
-        Console.WriteLine("Жду 1 сек перед нажатием 'Создать сделку'...");
-        await WaitWithStopAsync(page, 1000);
+        Console.WriteLine("Жду 0.7 сек перед нажатием 'Создать сделку'...");
+        await WaitWithStopAsync(page, 700);
         if (stopAllRequested) return false;
 
         var createDealClicked = await ClickDealActionButtonWithRetryAsync(page, "Создать сделку");
@@ -465,7 +465,7 @@ async Task<bool> ExecuteDealActionFlowAsync(IPage page, P2POffer best)
 
 async Task<bool> ClickDealActionButtonWithRetryAsync(IPage page, string buttonText)
 {
-    for (var attempt = 1; attempt <= 4; attempt++)
+    for (var attempt = 1; attempt <= 5; attempt++)
     {
         if (stopAllRequested)
         {
@@ -478,7 +478,7 @@ async Task<bool> ClickDealActionButtonWithRetryAsync(IPage page, string buttonTe
             return true;
         }
 
-        await WaitWithStopAsync(page, 600);
+        await WaitWithStopAsync(page, 350);
     }
 
     return false;
