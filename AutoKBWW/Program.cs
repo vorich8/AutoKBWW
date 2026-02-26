@@ -179,10 +179,49 @@ async Task RunP2PAutomationAsync(IPage page)
         return;
     }
 
+    await ExecuteDealActionFlowAsync(page, best);
+    if (stopAllRequested)
+    {
+        Console.WriteLine("Автоматизация остановлена клавишей S.");
+        return;
+    }
+
     var dealInfo = await ExtractDealInfoAsync(page);
     PrintDealInfo(dealInfo);
 
     await NotifyFoundDealToUsersAsync(page, notificationUsers, best, dealInfo);
+}
+
+async Task ExecuteDealActionFlowAsync(IPage page, P2POffer best)
+{
+    Console.WriteLine("Готовлю действия по сделке: 'Купить' и финальная кнопка...");
+
+    Console.WriteLine("Жду 3 сек перед нажатием 'Купить'...");
+    await WaitWithStopAsync(page, 3000);
+    if (stopAllRequested) return;
+
+    var buyClicked = await ClickVisibleButtonByTextAsync(page, "Купить", startsWith: true);
+    if (!buyClicked)
+    {
+        Console.WriteLine("Кнопка 'Купить' не найдена на экране сделки.");
+        return;
+    }
+
+    var isRangeOffer = best.VolumeMin is not null &&
+                       best.VolumeMax is not null &&
+                       Math.Abs(best.VolumeMax.Value - best.VolumeMin.Value) > 0.001;
+
+    var finalButton = isRangeOffer ? "Макс." : "Создать сделку";
+
+    Console.WriteLine($"Жду 3 сек перед нажатием '{finalButton}'...");
+    await WaitWithStopAsync(page, 3000);
+    if (stopAllRequested) return;
+
+    var finalClicked = await ClickVisibleButtonByTextAsync(page, finalButton, startsWith: true);
+    if (!finalClicked)
+    {
+        Console.WriteLine($"Кнопка '{finalButton}' не найдена.");
+    }
 }
 
 async Task<P2POffer?> FindBestOfferWithPagingAsync(IPage page, double targetPriceRub, VolumeFilter volumeFilter, IReadOnlyList<string> notificationUsers)
