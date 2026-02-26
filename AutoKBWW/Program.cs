@@ -486,7 +486,8 @@ async Task<bool> ExecuteDealActionFlowAsync(IPage page, P2POffer best)
 {
     _ = best;
 
-    Console.WriteLine("Готовлю действия по сделке: 'Купить' и финальная кнопка...");
+    Console.WriteLine($"Готовлю действия по сделке для объявления: [{best.DisplayIndex}] {best.SourceLabel}");
+    await LogVisibleButtonsAsync(page, "Кнопки после открытия объявления");
 
     Console.WriteLine("Жду 0.7 сек перед нажатием 'Купить'...");
     await WaitWithStopAsync(page, 700);
@@ -544,16 +545,62 @@ async Task<bool> ClickDealActionButtonWithRetryAsync(IPage page, string buttonTe
             return false;
         }
 
+        Console.WriteLine($"Пытаюсь нажать кнопку '{buttonText}' (попытка {attempt}/5)...");
         var clicked = await ClickVisibleButtonByTextAsync(page, buttonText, startsWith: true, preferExact: true);
         if (clicked)
         {
+            Console.WriteLine($"Успешно нажал '{buttonText}' на попытке {attempt}.");
             return true;
         }
 
+        Console.WriteLine($"Кнопка '{buttonText}' не найдена на попытке {attempt}. Снимаю список видимых кнопок...");
+        await LogVisibleButtonsAsync(page, $"Видимые кнопки (поиск '{buttonText}', попытка {attempt})");
         await WaitWithStopAsync(page, 350);
     }
 
+    Console.WriteLine($"Не удалось нажать '{buttonText}' после 5 попыток.");
     return false;
+}
+
+async Task LogVisibleButtonsAsync(IPage page, string title)
+{
+    var buttons = await CollectVisibleButtonsAsync(page);
+    Console.WriteLine($"=== {title} ===");
+    if (buttons.Count == 0)
+    {
+        Console.WriteLine("Видимых кнопок не найдено.");
+    }
+    else
+    {
+        for (var i = 0; i < buttons.Count; i++)
+        {
+            Console.WriteLine($"  ({i}) '{buttons[i].Label}'");
+        }
+    }
+
+    Console.WriteLine("=== КОНЕЦ СПИСКА КНОПОК ===");
+}
+
+static async Task<List<ButtonDebugInfo>> CollectVisibleButtonsAsync(IPage page)
+{
+    var buttons = await page.EvaluateAsync<List<string>>("""
+() => {
+  const text = (el) => (el?.textContent || '').replace(/\s+/g, ' ').trim();
+  return Array.from(document.querySelectorAll('button, [role="button"], .reply-markup-button, .Button'))
+    .filter((btn) => {
+      const rect = btn.getBoundingClientRect();
+      const style = getComputedStyle(btn);
+      return rect.width > 0 && rect.height > 0 && style.visibility !== 'hidden' && style.display !== 'none';
+    })
+    .map((btn) => text(btn))
+    .filter((t) => t.length > 0)
+    .slice(-40);
+}
+""");
+
+    return (buttons ?? new List<string>())
+        .Select(label => new ButtonDebugInfo { Label = label })
+        .ToList();
 }
 
 async Task<bool> ClickAnyDealActionButtonWithRetryAsync(IPage page, params string[] buttonTexts)
@@ -1473,6 +1520,11 @@ file sealed class ClickTarget
 {
     public required double X { get; init; }
     public required double Y { get; init; }
+    public required string Label { get; init; }
+}
+
+file sealed class ButtonDebugInfo
+{
     public required string Label { get; init; }
 }
 
