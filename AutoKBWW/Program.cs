@@ -231,7 +231,7 @@ async Task RunP2PAutomationAsync(IPage page)
 
         if (!lower.Contains("продавец принял сделку"))
         {
-            Console.WriteLine("Жду итог сделки: 'Продавец принял сделку' или 'Продавец отказался от сделки'...");
+            Console.WriteLine("Жду итог сделки: принятие, отказ или сообщение о проблеме цены/суммы...");
             var outcome = await WaitForDealOutcomeAsync(page);
             if (outcome == DealOutcome.Rejected)
             {
@@ -252,6 +252,19 @@ async Task RunP2PAutomationAsync(IPage page)
             {
                 await StopWithNotifyAsync("Ожидание итога сделки остановлено клавишей S.");
                 return;
+            }
+
+            if (outcome == DealOutcome.NeedRestart)
+            {
+                Console.WriteLine("Сделка не создана (цена/сумма изменилась или нужен ручной ввод). Перезапускаю поиск через /p2p...");
+                var restarted = await RestartP2PAfterRejectedDealAsync(page);
+                if (!restarted)
+                {
+                    Console.WriteLine("Не удалось перезапустить /p2p после сбоя создания сделки.");
+                    return;
+                }
+
+                continue;
             }
 
             dealInfo = await ExtractDealInfoWithRescansAsync(page, maxAttempts: 12);
@@ -350,6 +363,7 @@ async Task<DealOutcome> WaitForDealOutcomeAsync(IPage page)
         var lower = dealInfo.MessageText?.ToLowerInvariant() ?? string.Empty;
         if (lower.Contains("продавец принял сделку")) return DealOutcome.Accepted;
         if (lower.Contains("продавец отказался от сделки")) return DealOutcome.Rejected;
+        if (HasDealCreationProblem(lower)) return DealOutcome.NeedRestart;
 
         checkCounter++;
         if (checkCounter % 5 == 0)
@@ -359,6 +373,16 @@ async Task<DealOutcome> WaitForDealOutcomeAsync(IPage page)
 
         await WaitWithStopAsync(page, 2000);
     }
+}
+
+bool HasDealCreationProblem(string lowerMessage)
+{
+    if (string.IsNullOrWhiteSpace(lowerMessage)) return false;
+
+    return lowerMessage.Contains("цена объявления изменилась")
+           || lowerMessage.Contains("пришлите сумму сделки")
+           || lowerMessage.Contains("попробуйте повторить попытку быстрее")
+           || lowerMessage.Contains("в пределах от");
 }
 
 async Task<bool> ExecuteDealActionFlowAsync(IPage page, P2POffer best)
@@ -1325,6 +1349,7 @@ enum DealOutcome
 {
     Accepted,
     Rejected,
+    NeedRestart,
     Stopped
 }
 
