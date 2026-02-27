@@ -608,10 +608,10 @@ async Task<List<ButtonDebugInfo>> CollectVisibleButtonsWithTimeoutAsync(IPage pa
 
 static async Task<List<ButtonDebugInfo>> CollectVisibleButtonsAsync(IPage page)
 {
-    var buttons = await page.EvaluateAsync<List<string>>("""
+    var buttonsJson = await page.EvaluateAsync<string>("""
 () => {
   const text = (el) => (el?.textContent || '').replace(/\s+/g, ' ').trim();
-  return Array.from(document.querySelectorAll('button, [role="button"], .reply-markup-button, .Button'))
+  const items = Array.from(document.querySelectorAll('button, [role="button"], .reply-markup-button, .Button'))
     .filter((btn) => {
       const rect = btn.getBoundingClientRect();
       const style = getComputedStyle(btn);
@@ -620,12 +620,14 @@ static async Task<List<ButtonDebugInfo>> CollectVisibleButtonsAsync(IPage page)
     .map((btn) => text(btn))
     .filter((t) => typeof t === 'string' && t.length > 0)
     .slice(-40);
+
+  return JSON.stringify(items);
 }
 """);
 
-    return (buttons ?? new List<string>())
+    return ParseStringArrayJson(buttonsJson)
         .Where(label => !string.IsNullOrWhiteSpace(label))
-        .Select(label => new ButtonDebugInfo { Label = label! })
+        .Select(label => new ButtonDebugInfo { Label = label })
         .ToList();
 }
 
@@ -1506,7 +1508,7 @@ static async Task<bool> ClickVisibleButtonByIndexAsync(IPage page, int displayIn
 
 static async Task<JsonElement> CollectMenuDataAsync(IPage page)
 {
-    return await page.EvaluateAsync<JsonElement>("""
+    var menuJson = await page.EvaluateAsync<string>("""
 () => {
   const text = (el) => (el?.textContent || '').replace(/\s+/g, ' ').trim();
   const blockText = (el) => (el?.innerText || el?.textContent || '').replace(/\r/g, '').trim();
@@ -1543,16 +1545,19 @@ static async Task<JsonElement> CollectMenuDataAsync(IPage page)
   const messageTime = text(lastBubble?.querySelector('time, .time, .message-time'));
   const activeChatTitle = text(document.querySelector('.chat-info .title, .chat-info-wrapper .title, .topbar .title, header .title'));
 
-  return {
+  return JSON.stringify({
     extractedAt: new Date().toISOString(),
     activeChatTitle,
     messageAboveButtons,
     messageTime,
     visibleButtonCount: visibleButtons.length,
     visibleButtons
-  };
+  });
 }
 """);
+
+    return ParseJsonObjectOrDefault(menuJson,
+        """{"extractedAt":"","activeChatTitle":"","messageAboveButtons":"","messageTime":"","visibleButtonCount":0,"visibleButtons":[]}""");
 }
 
 static void PrintMenuToConsole(JsonElement result)
@@ -1615,6 +1620,69 @@ static string ResolveYandexBrowserPath()
     }
 
     throw new FileNotFoundException("Не найден executable Яндекс Браузера. Укажите YANDEX_BROWSER_PATH.");
+}
+
+static JsonElement ParseJsonObjectOrDefault(string? data, string fallbackJson)
+{
+    try
+    {
+        using var fallbackDoc = JsonDocument.Parse(fallbackJson);
+        if (string.IsNullOrWhiteSpace(data))
+        {
+            return fallbackDoc.RootElement.Clone();
+        }
+
+        using var doc = JsonDocument.Parse(data);
+        if (doc.RootElement.ValueKind != JsonValueKind.Object)
+        {
+            return fallbackDoc.RootElement.Clone();
+        }
+
+        return doc.RootElement.Clone();
+    }
+    catch (JsonException)
+    {
+        using var fallbackDoc = JsonDocument.Parse(fallbackJson);
+        return fallbackDoc.RootElement.Clone();
+    }
+}
+
+static List<string> ParseStringArrayJson(string? data)
+{
+    if (string.IsNullOrWhiteSpace(data))
+    {
+        return new List<string>();
+    }
+
+    try
+    {
+        using var doc = JsonDocument.Parse(data);
+        if (doc.RootElement.ValueKind != JsonValueKind.Array)
+        {
+            return new List<string>();
+        }
+
+        var list = new List<string>();
+        foreach (var item in doc.RootElement.EnumerateArray())
+        {
+            if (item.ValueKind != JsonValueKind.String)
+            {
+                continue;
+            }
+
+            var value = item.GetString();
+            if (!string.IsNullOrWhiteSpace(value))
+            {
+                list.Add(value);
+            }
+        }
+
+        return list;
+    }
+    catch (JsonException)
+    {
+        return new List<string>();
+    }
 }
 
 static bool TryReadDealInfo(string? data, out DealInfo info)
