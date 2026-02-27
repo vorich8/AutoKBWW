@@ -510,12 +510,16 @@ async Task<bool> ExecuteDealActionFlowAsync(IPage page, P2POffer best)
         return false;
     }
 
-    Console.WriteLine("Жду 0.7 сек перед анализом кнопок сделки...");
-    await WaitWithStopAsync(page, 700);
-    if (stopAllRequested) return false;
+    var enteredDealActions = await EnsureDealActionsOpenedAsync(page);
+    if (!enteredDealActions)
+    {
+        Console.WriteLine("Не удалось перейти к шагу выбора суммы/создания сделки после нажатия 'Купить'.");
+        await LogVisibleButtonsAsync(page, "Кнопки после попытки перехода к шагу сделки");
+        return false;
+    }
 
     var actionButtons = await DetectDealActionButtonsStateAsync(page);
-    Console.WriteLine($"Проверка кнопок сделки: Макс={actionButtons.HasMax}, Создать={actionButtons.HasCreate}.");
+    Console.WriteLine($"Проверка кнопок сделки: Купить={actionButtons.HasBuy}, Макс={actionButtons.HasMax}, Создать={actionButtons.HasCreate}.");
 
     if (actionButtons.HasMax)
     {
@@ -562,6 +566,40 @@ async Task<bool> ExecuteDealActionFlowAsync(IPage page, P2POffer best)
     return false;
 }
 
+async Task<bool> EnsureDealActionsOpenedAsync(IPage page)
+{
+    for (var attempt = 1; attempt <= 4; attempt++)
+    {
+        if (stopAllRequested) return false;
+
+        Console.WriteLine($"Жду 0.7 сек перед проверкой перехода к шагу сделки (попытка {attempt}/4)...");
+        await WaitWithStopAsync(page, 700);
+        if (stopAllRequested) return false;
+
+        var state = await DetectDealActionButtonsStateAsync(page);
+        Console.WriteLine($"Состояние после 'Купить': Купить={state.HasBuy}, Макс={state.HasMax}, Создать={state.HasCreate}.");
+
+        if (state.HasMax || state.HasCreate)
+        {
+            return true;
+        }
+
+        if (!state.HasBuy)
+        {
+            continue;
+        }
+
+        Console.WriteLine("Похоже, карточка сделки не открылась (кнопка 'Купить' всё ещё на месте). Пробую нажать 'Купить' повторно...");
+        var buyClicked = await ClickAnyDealActionButtonWithRetryAsync(page, "Купить", "Купить USDT");
+        if (!buyClicked)
+        {
+            Console.WriteLine("Повторно нажать 'Купить' не удалось.");
+        }
+    }
+
+    return false;
+}
+
 async Task<DealActionButtonsState> DetectDealActionButtonsStateAsync(IPage page)
 {
     var buttons = await CollectVisibleButtonsWithTimeoutAsync(page, timeoutMs: 1200);
@@ -571,11 +609,12 @@ async Task<DealActionButtonsState> DetectDealActionButtonsStateAsync(IPage page)
         .Select(x => x.Trim())
         .ToList();
 
+    var hasBuy = labels.Any(label => label.StartsWith("Купить", StringComparison.OrdinalIgnoreCase));
     var hasMax = labels.Any(label => label.StartsWith("Макс", StringComparison.OrdinalIgnoreCase));
     var hasCreate = labels.Any(label => label.StartsWith("Создать сделку", StringComparison.OrdinalIgnoreCase)
                                         || string.Equals(label, "Создать", StringComparison.OrdinalIgnoreCase));
 
-    return new DealActionButtonsState { HasMax = hasMax, HasCreate = hasCreate };
+    return new DealActionButtonsState { HasBuy = hasBuy, HasMax = hasMax, HasCreate = hasCreate };
 }
 
 async Task<bool> ClickDealActionButtonWithRetryAsync(IPage page, string buttonText)
@@ -1871,6 +1910,7 @@ file readonly record struct ClickTarget(double X, double Y, string Label);
 
 file sealed class DealActionButtonsState
 {
+    public required bool HasBuy { get; init; }
     public required bool HasMax { get; init; }
     public required bool HasCreate { get; init; }
 }
