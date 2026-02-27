@@ -159,8 +159,8 @@ async Task RunP2PAutomationAsync(IPage page)
         }
 
         Console.WriteLine($"Выбираю лучшее объявление: [{best.DisplayIndex}] {best.SourceLabel}");
-        Console.WriteLine("Жду 0.5 сек перед нажатием лучшего объявления...");
-        await WaitWithStopAsync(page, 500);
+        Console.WriteLine("Жду 0.18 сек перед нажатием лучшего объявления...");
+        await WaitWithStopAsync(page, 180);
         if (stopAllRequested)
         {
             await StopWithNotifyAsync("Автоматизация остановлена клавишей S.");
@@ -194,7 +194,7 @@ async Task RunP2PAutomationAsync(IPage page)
             continue;
         }
 
-        Console.WriteLine("Жду 2 сек после создания сделки, чтобы сообщение успело появиться...");
+        Console.WriteLine("Жду 1 сек после создания сделки, чтобы сообщение успело появиться...");
         await WaitWithStopAsync(page, 1000);
         if (stopAllRequested)
         {
@@ -343,7 +343,7 @@ async Task<bool> NavigateToSbpMenuAsync(IPage page, bool includeP2p)
 
             if (!clicked)
             {
-                await WaitWithStopAsync(page, 700);
+                await WaitWithStopAsync(page, 250);
                 if (stopAllRequested) return false;
             }
         }
@@ -453,7 +453,7 @@ async Task<DealOutcome> WaitForDealOutcomeAsync(IPage page, DealInfo initialDeal
             return DealOutcome.NeedRestart;
         }
 
-        await WaitWithStopAsync(page, 700);
+        await WaitWithStopAsync(page, 250);
     }
 }
 
@@ -530,8 +530,8 @@ async Task<bool> ExecuteDealActionFlowAsync(IPage page, P2POffer best, VolumeFil
     Console.WriteLine($"Готовлю действия по сделке для объявления: [{best.DisplayIndex}] {best.SourceLabel}");
     await LogVisibleButtonsAsync(page, "Кнопки после открытия объявления");
 
-    Console.WriteLine("Жду 0.7 сек перед нажатием 'Купить'...");
-    await WaitWithStopAsync(page, 700);
+    Console.WriteLine("Жду 0.25 сек перед нажатием 'Купить'...");
+    await WaitWithStopAsync(page, 250);
     if (stopAllRequested) return false;
 
     var buyClicked = await ClickBuyButtonWithRetryAsync(page);
@@ -561,18 +561,18 @@ async Task<bool> ExecuteDealActionFlowAsync(IPage page, P2POffer best, VolumeFil
     if (actionButtons.HasMax)
     {
         Console.WriteLine("Найдена кнопка 'Макс'. Нажимаю её перед созданием сделки...");
-        var maxClicked = await ClickAnyDealActionButtonWithRetryAsync(page, "Макс.", "Макс");
+        var maxClicked = await ClickAnyDealActionButtonWithRetryAsync(page, "Макс");
         if (!maxClicked)
         {
             Console.WriteLine("Кнопка 'Макс' была обнаружена, но нажать её не удалось.");
             return false;
         }
 
-        Console.WriteLine("Нажата 'Макс'. Жду 0.7 сек перед нажатием 'Создать сделку'...");
-        await WaitWithStopAsync(page, 700);
+        Console.WriteLine("Нажата 'Макс'. Жду 0.25 сек перед нажатием 'Создать сделку'...");
+        await WaitWithStopAsync(page, 250);
         if (stopAllRequested) return false;
 
-        var createAfterMaxClicked = await ClickAnyDealActionButtonWithRetryAsync(page, "Создать сделку", "Создать");
+        var createAfterMaxClicked = await ClickAnyDealActionButtonWithRetryAsync(page, "Созд");
         if (!createAfterMaxClicked)
         {
             Console.WriteLine("Кнопка 'Создать сделку' не найдена после нажатия 'Макс'.");
@@ -585,10 +585,10 @@ async Task<bool> ExecuteDealActionFlowAsync(IPage page, P2POffer best, VolumeFil
     if (actionButtons.HasCreate)
     {
         Console.WriteLine("Кнопки 'Макс' нет, но есть 'Создать сделку' (единый объем). Нажимаю сразу 'Создать сделку'...");
-        await WaitWithStopAsync(page, 700);
+        await WaitWithStopAsync(page, 250);
         if (stopAllRequested) return false;
 
-        var createDealClicked = await ClickAnyDealActionButtonWithRetryAsync(page, "Создать сделку", "Создать");
+        var createDealClicked = await ClickAnyDealActionButtonWithRetryAsync(page, "Созд");
         if (!createDealClicked)
         {
             Console.WriteLine("Кнопка 'Создать сделку' была на экране, но нажать её не удалось.");
@@ -625,14 +625,14 @@ bool ShouldUseSpecifyRubFlow(P2POffer offer, VolumeFilter volumeFilter, DealActi
 
 async Task<bool> ExecuteSpecifyRubAmountFlowAsync(IPage page, double targetRub)
 {
-    var specifyClicked = await ClickAnyDealActionButtonWithRetryAsync(page, "Указать в RUB", "Указать RUB", "Указать в руб", "Указать");
+    var specifyClicked = await ClickAnyDealActionButtonWithRetryAsync(page, "Указ");
     if (!specifyClicked)
     {
         Console.WriteLine("Кнопка 'Указать в RUB' не найдена.");
         return false;
     }
 
-    await WaitWithStopAsync(page, 700);
+    await WaitWithStopAsync(page, 250);
     if (stopAllRequested) return false;
 
     var amountText = ((int)Math.Round(targetRub, MidpointRounding.AwayFromZero)).ToString(CultureInfo.InvariantCulture);
@@ -645,10 +645,10 @@ async Task<bool> ExecuteSpecifyRubAmountFlowAsync(IPage page, double targetRub)
         return false;
     }
 
-    await WaitWithStopAsync(page, 700);
+    await WaitWithStopAsync(page, 250);
     if (stopAllRequested) return false;
 
-    var createClicked = await ClickAnyDealActionButtonWithRetryAsync(page, "Создать сделку", "Создать");
+    var createClicked = await ClickAnyDealActionButtonWithRetryAsync(page, "Созд");
     if (!createClicked)
     {
         Console.WriteLine("Кнопка 'Создать сделку' не найдена после указания RUB.");
@@ -679,12 +679,12 @@ async Task<bool> ClickBuyButtonWithRetryAsync(IPage page)
 
 async Task<bool> EnsureDealActionsOpenedAsync(IPage page)
 {
-    for (var attempt = 1; attempt <= 8; attempt++)
+    for (var attempt = 1; attempt <= 2; attempt++)
     {
         if (stopAllRequested) return false;
 
-        Console.WriteLine($"Жду 0.7 сек перед проверкой перехода к шагу сделки (попытка {attempt}/8)...");
-        await WaitWithStopAsync(page, 700);
+        Console.WriteLine($"Жду 0.25 сек перед проверкой перехода к шагу сделки (попытка {attempt}/2)...");
+        await WaitWithStopAsync(page, 250);
         if (stopAllRequested) return false;
 
         var state = await DetectDealActionButtonsStateAsync(page);
@@ -732,15 +732,19 @@ async Task<DealActionButtonsState> DetectDealActionButtonsStateAsync(IPage page)
 
 async Task<bool> ClickDealActionButtonWithRetryAsync(IPage page, string buttonText)
 {
-    for (var attempt = 1; attempt <= 5; attempt++)
+    for (var attempt = 1; attempt <= 2; attempt++)
     {
         if (stopAllRequested)
         {
             return false;
         }
 
-        Console.WriteLine($"Пытаюсь нажать кнопку '{buttonText}' (попытка {attempt}/5)...");
-        var clicked = await ClickVisibleButtonByTextAsync(page, buttonText, startsWith: true, preferExact: true);
+        Console.WriteLine($"Пытаюсь нажать кнопку '{buttonText}' (попытка {attempt}/2)...");
+        var clicked = await ClickVisibleButtonByTextAsync(page, buttonText, startsWith: true, preferExact: false);
+        if (!clicked)
+        {
+            clicked = await ClickVisibleButtonByTextAsync(page, buttonText, startsWith: false, containsOnly: true);
+        }
         if (clicked)
         {
             Console.WriteLine($"Успешно нажал '{buttonText}' на попытке {attempt}.");
@@ -749,10 +753,10 @@ async Task<bool> ClickDealActionButtonWithRetryAsync(IPage page, string buttonTe
 
         Console.WriteLine($"Кнопка '{buttonText}' не найдена на попытке {attempt}. Снимаю список видимых кнопок...");
         await LogVisibleButtonsAsync(page, $"Видимые кнопки (поиск '{buttonText}', попытка {attempt})");
-        await WaitWithStopAsync(page, 350);
+        await WaitWithStopAsync(page, 150);
     }
 
-    Console.WriteLine($"Не удалось нажать '{buttonText}' после 5 попыток.");
+    Console.WriteLine($"Не удалось нажать '{buttonText}' после 2 попыток.");
     return false;
 }
 
@@ -1755,7 +1759,7 @@ static async Task<bool> ClickVisibleButtonByIndexAsync(IPage page, int displayIn
 
     if (isAutomation)
     {
-        await page.WaitForTimeoutAsync(2000);
+        await page.WaitForTimeoutAsync(650);
     }
 
     return true;
