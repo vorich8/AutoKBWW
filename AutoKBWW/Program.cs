@@ -1670,9 +1670,12 @@ static async Task<bool> ClickVisibleButtonByTextAsync(IPage page, string expecte
       return rect.width > 0 && rect.height > 0 && style.visibility !== 'hidden' && style.display !== 'none';
     });
 
-  const maxTop = allVisibleButtons.length ? Math.max(...allVisibleButtons.map((x) => x.rect.top)) : 0;
-  const bottomBand = allVisibleButtons.filter((x) => x.rect.top >= maxTop - 260);
-  const scopedButtons = (bottomBand.length > 0 ? bottomBand : allVisibleButtons).map((x) => x.btn);
+  const bubbles = Array.from(document.querySelectorAll('.bubble, .message'));
+  const lastBubble = bubbles.at(-1) || null;
+  const anchorTop = lastBubble ? lastBubble.getBoundingClientRect().top : -100000;
+
+  const aroundLatestMessage = allVisibleButtons.filter((x) => x.rect.top >= anchorTop - 40);
+  const scopedButtons = (aroundLatestMessage.length > 0 ? aroundLatestMessage : allVisibleButtons).map((x) => x.btn);
 
   const expected = normalize(args.expectedText);
   const expectedLoose = loose(args.expectedText);
@@ -1738,14 +1741,13 @@ static async Task<bool> ClickVisibleButtonByIndexAsync(IPage page, int displayIn
       return t.length > 0 || (btn.getAttribute('aria-label') || '').trim().length > 0;
     });
 
-  const maxTop = allVisibleButtons.length ? Math.max(...allVisibleButtons.map((x) => x.rect.top)) : 0;
-  const bottomBand = allVisibleButtons.filter((x) => x.rect.top >= maxTop - 260)
-    .sort((a, b) => {
-      if (Math.abs(a.rect.top - b.rect.top) > 6) return a.rect.top - b.rect.top;
-      return a.rect.left - b.rect.left;
-    });
+  const bubbles = Array.from(document.querySelectorAll('.bubble, .message'));
+  const lastBubble = bubbles.at(-1) || null;
+  const anchorTop = lastBubble ? lastBubble.getBoundingClientRect().top : -100000;
 
-  const targetList = (bottomBand.length > 0 ? bottomBand : allVisibleButtons)
+  const aroundLatestMessage = allVisibleButtons.filter((x) => x.rect.top >= anchorTop - 40);
+
+  const targetList = (aroundLatestMessage.length > 0 ? aroundLatestMessage : allVisibleButtons)
     .sort((a, b) => {
       if (Math.abs(a.rect.top - b.rect.top) > 6) return a.rect.top - b.rect.top;
       return a.rect.left - b.rect.left;
@@ -1794,14 +1796,10 @@ static async Task<JsonElement> CollectMenuDataAsync(IPage page)
       return t.length > 0 || (btn.getAttribute('aria-label') || '').trim().length > 0;
     });
 
-  const maxTop = allVisibleButtons.length ? Math.max(...allVisibleButtons.map((x) => x.rect.top)) : 0;
-  const bottomBand = allVisibleButtons.filter((x) => x.rect.top >= maxTop - 260)
-    .sort((a, b) => {
-      if (Math.abs(a.rect.top - b.rect.top) > 6) return a.rect.top - b.rect.top;
-      return a.rect.left - b.rect.left;
-    });
+  const anchorTop = lastBubble ? lastBubble.getBoundingClientRect().top : -100000;
+  const aroundLatestMessage = allVisibleButtons.filter((x) => x.rect.top >= anchorTop - 40);
 
-  const targetButtons = (bottomBand.length > 0 ? bottomBand : allVisibleButtons)
+  const targetButtons = (aroundLatestMessage.length > 0 ? aroundLatestMessage : allVisibleButtons)
     .sort((a, b) => {
       if (Math.abs(a.rect.top - b.rect.top) > 6) return a.rect.top - b.rect.top;
       return a.rect.left - b.rect.left;
