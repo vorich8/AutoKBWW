@@ -1235,7 +1235,7 @@ static int ScoreDealMessage(string message)
 
 static async Task<DealInfo> ExtractDealInfoAsync(IPage page)
 {
-    var data = await page.EvaluateAsync<JsonElement>("""
+    var data = await page.EvaluateAsync<string>("""
 () => {
   const text = (el) => (el?.textContent || '').replace(/\s+/g, ' ').trim();
   const blockText = (el) => (el?.innerText || el?.textContent || '').replace(/\r/g, '').trim();
@@ -1264,10 +1264,10 @@ static async Task<DealInfo> ExtractDealInfoAsync(IPage page)
   const buyButton = Array.from(document.querySelectorAll('button, [role="button"], .reply-markup-button, .Button'))
     .find((btn) => text(btn).toLowerCase().startsWith('купить'));
 
-  return {
+  return JSON.stringify({
     MessageText: dealMessage,
     ActionButtonLabel: buyButton ? text(buyButton) : '(кнопка Купить* не найдена)'
-  };
+  });
 }
 """);
 
@@ -1359,7 +1359,7 @@ static (double? Min, double? Max) TryParseVolumeRange(string rawVolume)
 
 static async Task<bool> ClickChatByTitleAsync(IPage page, string titlePart)
 {
-    var targetData = await page.EvaluateAsync<JsonElement>("""
+    var targetData = await page.EvaluateAsync<string>("""
 (titlePart) => {
   const normalize = (s) => (s || '').replace(/\s+/g, ' ').trim().toLowerCase();
   const wanted = normalize(titlePart);
@@ -1370,7 +1370,7 @@ static async Task<bool> ClickChatByTitleAsync(IPage page, string titlePart)
   if (!hit) return null;
 
   const rect = hit.getBoundingClientRect();
-  return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2, label: text(hit) };
+  return JSON.stringify({ x: rect.left + rect.width / 2, y: rect.top + rect.height / 2, label: text(hit) });
 }
 """, titlePart);
 
@@ -1405,7 +1405,7 @@ static async Task<bool> SendMessageToCurrentChatAsync(IPage page, string message
 
 static async Task<bool> ClickVisibleButtonByTextAsync(IPage page, string expectedText, bool startsWith, bool containsOnly = false, bool preferExact = false)
 {
-    var targetData = await page.EvaluateAsync<JsonElement>("""
+    var targetData = await page.EvaluateAsync<string>("""
 (args) => {
   const normalize = (s) => (s || '').replace(/\s+/g, ' ').trim().toLowerCase();
   const loose = (s) => normalize(s).replace(/[^\p{L}\p{N}]+/gu, '');
@@ -1446,7 +1446,7 @@ static async Task<bool> ClickVisibleButtonByTextAsync(IPage page, string expecte
 
   const hit = scored[0].btn;
   const rect = hit.getBoundingClientRect();
-  return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2, label: text(hit) };
+  return JSON.stringify({ x: rect.left + rect.width / 2, y: rect.top + rect.height / 2, label: text(hit) });
 }
 """, new { expectedText, startsWith, containsOnly, preferExact });
 
@@ -1460,7 +1460,7 @@ static async Task<bool> ClickVisibleButtonByTextAsync(IPage page, string expecte
 
 static async Task<bool> ClickVisibleButtonByIndexAsync(IPage page, int displayIndex, bool isAutomation = false)
 {
-    var targetData = await page.EvaluateAsync<JsonElement>("""
+    var targetData = await page.EvaluateAsync<string>("""
 (displayIndex) => {
   const text = (el) => (el?.textContent || '').replace(/\s+/g, ' ').trim();
   const allVisibleButtons = Array.from(document.querySelectorAll('button, [role="button"], .reply-markup-button, .Button'))
@@ -1485,7 +1485,7 @@ static async Task<bool> ClickVisibleButtonByIndexAsync(IPage page, int displayIn
   if (!chosen) return null;
 
   const rect = chosen.btn.getBoundingClientRect();
-  return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2, label: text(chosen.btn) };
+  return JSON.stringify({ x: rect.left + rect.width / 2, y: rect.top + rect.height / 2, label: text(chosen.btn) });
 }
 """, displayIndex);
 
@@ -1617,55 +1617,83 @@ static string ResolveYandexBrowserPath()
     throw new FileNotFoundException("Не найден executable Яндекс Браузера. Укажите YANDEX_BROWSER_PATH.");
 }
 
-static bool TryReadDealInfo(JsonElement data, out DealInfo info)
+static bool TryReadDealInfo(string? data, out DealInfo info)
 {
     info = default!;
-    if (data.ValueKind != JsonValueKind.Object)
+    if (string.IsNullOrWhiteSpace(data))
     {
         return false;
     }
 
-    var messageText = data.TryGetProperty("MessageText", out var messageElement) && messageElement.ValueKind == JsonValueKind.String
-        ? messageElement.GetString() ?? string.Empty
-        : string.Empty;
-
-    var actionButtonLabel = data.TryGetProperty("ActionButtonLabel", out var actionElement) && actionElement.ValueKind == JsonValueKind.String
-        ? actionElement.GetString() ?? string.Empty
-        : string.Empty;
-
-    info = new DealInfo
+    try
     {
-        MessageText = messageText,
-        ActionButtonLabel = string.IsNullOrWhiteSpace(actionButtonLabel) ? "(кнопка Купить* не найдена)" : actionButtonLabel
-    };
-    return true;
+        using var doc = JsonDocument.Parse(data);
+        var root = doc.RootElement;
+        if (root.ValueKind != JsonValueKind.Object)
+        {
+            return false;
+        }
+
+        var messageText = root.TryGetProperty("MessageText", out var messageElement) && messageElement.ValueKind == JsonValueKind.String
+            ? messageElement.GetString() ?? string.Empty
+            : string.Empty;
+
+        var actionButtonLabel = root.TryGetProperty("ActionButtonLabel", out var actionElement) && actionElement.ValueKind == JsonValueKind.String
+            ? actionElement.GetString() ?? string.Empty
+            : string.Empty;
+
+        info = new DealInfo
+        {
+            MessageText = messageText,
+            ActionButtonLabel = string.IsNullOrWhiteSpace(actionButtonLabel) ? "(кнопка Купить* не найдена)" : actionButtonLabel
+        };
+
+        return true;
+    }
+    catch (JsonException)
+    {
+        return false;
+    }
 }
 
-static bool TryReadClickTarget(JsonElement data, out ClickTarget target)
+static bool TryReadClickTarget(string? data, out ClickTarget target)
 {
     target = default;
-    if (data.ValueKind != JsonValueKind.Object)
+    if (string.IsNullOrWhiteSpace(data))
     {
         return false;
     }
 
-    var value = data;
-    if (!value.TryGetProperty("x", out var xElement) || xElement.ValueKind != JsonValueKind.Number)
+    try
+    {
+        using var doc = JsonDocument.Parse(data);
+        var root = doc.RootElement;
+        if (root.ValueKind != JsonValueKind.Object)
+        {
+            return false;
+        }
+
+        if (!root.TryGetProperty("x", out var xElement) || xElement.ValueKind != JsonValueKind.Number)
+        {
+            return false;
+        }
+
+        if (!root.TryGetProperty("y", out var yElement) || yElement.ValueKind != JsonValueKind.Number)
+        {
+            return false;
+        }
+
+        var label = root.TryGetProperty("label", out var labelElement) && labelElement.ValueKind == JsonValueKind.String
+            ? labelElement.GetString() ?? string.Empty
+            : string.Empty;
+
+        target = new ClickTarget(xElement.GetDouble(), yElement.GetDouble(), label);
+        return true;
+    }
+    catch (JsonException)
     {
         return false;
     }
-
-    if (!value.TryGetProperty("y", out var yElement) || yElement.ValueKind != JsonValueKind.Number)
-    {
-        return false;
-    }
-
-    var label = value.TryGetProperty("label", out var labelElement) && labelElement.ValueKind == JsonValueKind.String
-        ? labelElement.GetString() ?? string.Empty
-        : string.Empty;
-
-    target = new ClickTarget(xElement.GetDouble(), yElement.GetDouble(), label);
-    return true;
 }
 
 enum DealOutcome
