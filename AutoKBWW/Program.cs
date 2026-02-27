@@ -143,9 +143,11 @@ async Task RunP2PAutomationAsync(IPage page)
         await NotifyUsersWithTextAsync(page, notificationUsers, "Авто-P2P остановлена (команда S).");
     }
 
+    var automationStartedAt = DateTimeOffset.UtcNow;
+
     while (!stopAllRequested)
     {
-        var best = await FindBestOfferWithPagingAsync(page, targetPriceRub, volumeFilter, notificationUsers);
+        var best = await FindBestOfferWithPagingAsync(page, targetPriceRub, volumeFilter, notificationUsers, automationStartedAt);
         if (best is null)
         {
             if (stopAllRequested)
@@ -229,8 +231,13 @@ async Task RunP2PAutomationAsync(IPage page)
             continue;
         }
 
-        if (!lower.Contains("продавец принял сделку"))
+        var sellerAccepted = lower.Contains("продавец принял сделку");
+
+        if (!sellerAccepted)
         {
+            await NotifyPendingDealToUsersAsync(page, notificationUsers, best, dealInfo);
+            if (stopAllRequested) return;
+
             Console.WriteLine("Жду итог сделки: принятие, отказ или сообщение о проблеме цены/суммы...");
             var outcome = await WaitForDealOutcomeAsync(page, dealInfo);
             if (outcome == DealOutcome.Rejected)
@@ -270,19 +277,24 @@ async Task RunP2PAutomationAsync(IPage page)
                 continue;
             }
 
+            if (outcome == DealOutcome.Accepted)
+            {
+                sellerAccepted = true;
+            }
+
             dealInfo = await ExtractDealInfoWithRescansAsync(page, maxAttempts: 12);
             PrintDealInfo(dealInfo);
+            sellerAccepted = sellerAccepted || (dealInfo.MessageText ?? string.Empty)
+                .Contains("продавец принял сделку", StringComparison.OrdinalIgnoreCase);
         }
 
-        var acceptedByText = (dealInfo.MessageText ?? string.Empty)
-            .Contains("продавец принял сделку", StringComparison.OrdinalIgnoreCase);
-        if (acceptedByText)
+        if (sellerAccepted)
         {
             dealInfo = await OpenAcceptedDealDetailsAsync(page);
             PrintDealInfo(dealInfo);
         }
 
-        await NotifyFoundDealToUsersAsync(page, notificationUsers, best, dealInfo);
+        await NotifyFoundDealToUsersAsync(page, notificationUsers, best, dealInfo, sellerAccepted);
         return;
     }
 }
@@ -836,7 +848,7 @@ async Task<bool> ClickAnyDealActionButtonWithRetryAsync(IPage page, params strin
     return false;
 }
 
-async Task<P2POffer?> FindBestOfferWithPagingAsync(IPage page, double targetPriceRub, VolumeFilter volumeFilter, IReadOnlyList<string> notificationUsers)
+async Task<P2POffer?> FindBestOfferWithPagingAsync(IPage page, double targetPriceRub, VolumeFilter volumeFilter, IReadOnlyList<string> notificationUsers, DateTimeOffset startedAt)
 {
     var attempt = 0;
     var lastNoDealNotifyAt = DateTimeOffset.UtcNow;
@@ -873,7 +885,7 @@ async Task<P2POffer?> FindBestOfferWithPagingAsync(IPage page, double targetPric
 
         if (DateTimeOffset.UtcNow - lastNoDealNotifyAt >= TimeSpan.FromMinutes(5))
         {
-            await SendNoDealsNotificationAsync(page, notificationUsers);
+            await SendNoDealsNotificationAsync(page, notificationUsers, startedAt)
             if (stopAllRequested)
             {
                 Console.WriteLine("Поиск остановлен клавишей S.");
@@ -907,7 +919,7 @@ async Task<P2POffer?> FindBestOfferWithPagingAsync(IPage page, double targetPric
     }
 }
 
-async Task SendNoDealsNotificationAsync(IPage page, IReadOnlyList<string> users)
+async Task SendNoDealsNotificationAsync(IPage page, IReadOnlyList<string> users, DateTimeOffset startedAt)
 {
     Console.WriteLine($"5 минут без сделок. Отправляю уведомление пользователям: {string.Join(", ", users)}...");
 
@@ -926,7 +938,7 @@ async Task SendNoDealsNotificationAsync(IPage page, IReadOnlyList<string> users)
         await WaitWithStopAsync(page, 2000);
         if (stopAllRequested) return;
 
-        var sent = await SendMessageToCurrentChatAsync(page, "Пока сделок нет. Продолжаю поиски..");
+        var sent = await SendMessageToCurrentChatAsync(page, $"Пока сделок нет. Продолжаю поиски. Ищу уже {FormatElapsedSince(startedAt)}.");
         if (!sent)
         {
             Console.WriteLine($"Не удалось отправить уведомление в {user}.");
@@ -946,25 +958,35 @@ async Task SendNoDealsNotificationAsync(IPage page, IReadOnlyList<string> users)
     await WaitWithStopAsync(page, 2000);
 }
 
+static string FormatElapsedSince(DateTimeOffset startedAt)
+{
+    var elapsed = DateTimeOffset.UtcNow - startedAt;
+    if (elapsed < TimeSpan.Zero) elapsed = TimeSpan.Zero;
+
+    if (elapsed.TotalHours >= 1)
+    {
+        return $"{(int)elapsed.TotalHours}ч {elapsed.Minutes}м";
+    }
+
+    return $"{elapsed.Minutes}м {elapsed.Seconds}с";
+}
+
+async Task NotifyPendingDealToUsersAsync(IPage page, IReadOnlyList<string> users, P2POffer best, DealInfo dealInfo)
+{
+    var announcement = TryBuildFullDealNotificationText(best, dealInfo)
+        ?? $"Найдено подходящее объявление: [{best.DisplayIndex}] {best.SourceLabel}";
+
+    await NotifyUsersWithTextAsync(page, users, announcement);
+    if (stopAllRequested) return;
+
+    await NotifyUsersWithTextAsync(page, users, "Жду решения продавца: подтверждение или отказ.");
+}
+
 async Task NotifyRejectedDealToUsersAsync(IPage page, IReadOnlyList<string> users, P2POffer best, DealInfo dealInfo)
 {
     Console.WriteLine($"Отправляю уведомление об отмененной сделке пользователям: {string.Join(", ", users)}...");
 
-    var formattedDeal = FormatDealMessage(dealInfo.MessageText ?? string.Empty);
-    if (string.IsNullOrWhiteSpace(formattedDeal))
-    {
-        formattedDeal = "(текст сделки не удалось извлечь)";
-    }
-
-    var message = $"""
-Сделка отменена продавцом.
-Локальная пометка: [редактировано по правилам общения].
-
-Оффер: [{best.DisplayIndex}] {best.SourceLabel}
-
-Текст сделки:
-{formattedDeal}
-""";
+    var message = "Продавец отказался от сделки.";
 
     foreach (var user in users)
     {
@@ -1002,11 +1024,15 @@ async Task NotifyRejectedDealToUsersAsync(IPage page, IReadOnlyList<string> user
     await WaitWithStopAsync(page, 2000);
 }
 
-async Task NotifyFoundDealToUsersAsync(IPage page, IReadOnlyList<string> users, P2POffer best, DealInfo dealInfo)
+async Task NotifyFoundDealToUsersAsync(IPage page, IReadOnlyList<string> users, P2POffer best, DealInfo dealInfo, bool sellerAccepted)
 {
     Console.WriteLine($"Отправляю найденное объявление пользователям: {string.Join(", ", users)}...");
 
     var fullDealText = TryBuildFullDealNotificationText(best, dealInfo);
+    if (sellerAccepted && !string.IsNullOrWhiteSpace(fullDealText))
+    {
+        fullDealText = "ПРОДАВЕЦ ПРИНЯЛ СДЕЛКУ.\n\n" + fullDealText;
+    }
     if (fullDealText is null)
     {
         Console.WriteLine("Полный текст сделки не собран. Уведомление НЕ отправлено, чтобы не слать неполные данные.");
