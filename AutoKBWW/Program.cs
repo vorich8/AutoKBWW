@@ -1664,18 +1664,22 @@ static async Task<bool> ClickVisibleButtonByTextAsync(IPage page, string expecte
   const text = (el) => (el?.textContent || '').replace(/\s+/g, ' ').trim();
 
   const allVisibleButtons = Array.from(document.querySelectorAll('button, [role="button"], .reply-markup-button, .Button'))
-    .filter((btn) => {
-      const rect = btn.getBoundingClientRect();
+    .map((btn) => ({ btn, rect: btn.getBoundingClientRect() }))
+    .filter(({ btn, rect }) => {
       const style = getComputedStyle(btn);
       return rect.width > 0 && rect.height > 0 && style.visibility !== 'hidden' && style.display !== 'none';
     });
+
+  const maxTop = allVisibleButtons.length ? Math.max(...allVisibleButtons.map((x) => x.rect.top)) : 0;
+  const bottomBand = allVisibleButtons.filter((x) => x.rect.top >= maxTop - 260);
+  const scopedButtons = (bottomBand.length > 0 ? bottomBand : allVisibleButtons).map((x) => x.btn);
 
   const expected = normalize(args.expectedText);
   const expectedLoose = loose(args.expectedText);
   const expectedTokens = expected.split(/\s+/).filter(Boolean);
   const tokenMatch = (t) => expectedTokens.length > 0 && expectedTokens.every((token) => t.includes(token));
 
-  const matches = allVisibleButtons.filter((btn) => {
+  const matches = scopedButtons.filter((btn) => {
     const t = normalize(text(btn));
     const tLoose = loose(text(btn));
     if (args.preferExact && t === expected) return true;
@@ -1725,24 +1729,29 @@ static async Task<bool> ClickVisibleButtonByIndexAsync(IPage page, int displayIn
 (displayIndex) => {
   const text = (el) => (el?.textContent || '').replace(/\s+/g, ' ').trim();
   const allVisibleButtons = Array.from(document.querySelectorAll('button, [role="button"], .reply-markup-button, .Button'))
-    .map((btn) => ({ btn }))
-    .filter(({ btn }) => {
-      const rect = btn.getBoundingClientRect();
+    .map((btn) => ({ btn, rect: btn.getBoundingClientRect() }))
+    .filter(({ btn, rect }) => {
       const style = getComputedStyle(btn);
       const visible = rect.width > 0 && rect.height > 0 && style.visibility !== 'hidden' && style.display !== 'none';
       if (!visible) return false;
       const t = text(btn);
       return t.length > 0 || (btn.getAttribute('aria-label') || '').trim().length > 0;
-    })
-    .sort((a, b) => {
-      const ar = a.btn.getBoundingClientRect();
-      const br = b.btn.getBoundingClientRect();
-      if (Math.abs(ar.top - br.top) > 6) return ar.top - br.top;
-      return ar.left - br.left;
     });
 
-  const last30 = allVisibleButtons.slice(-30);
-  const chosen = last30[displayIndex];
+  const maxTop = allVisibleButtons.length ? Math.max(...allVisibleButtons.map((x) => x.rect.top)) : 0;
+  const bottomBand = allVisibleButtons.filter((x) => x.rect.top >= maxTop - 260)
+    .sort((a, b) => {
+      if (Math.abs(a.rect.top - b.rect.top) > 6) return a.rect.top - b.rect.top;
+      return a.rect.left - b.rect.left;
+    });
+
+  const targetList = (bottomBand.length > 0 ? bottomBand : allVisibleButtons)
+    .sort((a, b) => {
+      if (Math.abs(a.rect.top - b.rect.top) > 6) return a.rect.top - b.rect.top;
+      return a.rect.left - b.rect.left;
+    });
+
+  const chosen = targetList[displayIndex];
   if (!chosen) return null;
 
   const rect = chosen.btn.getBoundingClientRect();
@@ -1776,24 +1785,30 @@ static async Task<JsonElement> CollectMenuDataAsync(IPage page)
   const lastBubble = bubbles.at(-1) || null;
 
   const allVisibleButtons = Array.from(document.querySelectorAll('button, [role="button"], .reply-markup-button, .Button'))
-    .map((btn, domIndex) => ({ btn, domIndex }))
-    .filter(({ btn }) => {
-      const rect = btn.getBoundingClientRect();
+    .map((btn, domIndex) => ({ btn, domIndex, rect: btn.getBoundingClientRect() }))
+    .filter(({ btn, rect }) => {
       const style = getComputedStyle(btn);
       const visible = rect.width > 0 && rect.height > 0 && style.visibility !== 'hidden' && style.display !== 'none';
       if (!visible) return false;
       const t = text(btn);
       return t.length > 0 || (btn.getAttribute('aria-label') || '').trim().length > 0;
-    })
-    .sort((a, b) => {
-      const ar = a.btn.getBoundingClientRect();
-      const br = b.btn.getBoundingClientRect();
-      if (Math.abs(ar.top - br.top) > 6) return ar.top - br.top;
-      return ar.left - br.left;
     });
 
-  const last30 = allVisibleButtons.slice(-30);
-  const visibleButtons = last30.map(({ btn, domIndex }, displayIndex) => ({
+  const maxTop = allVisibleButtons.length ? Math.max(...allVisibleButtons.map((x) => x.rect.top)) : 0;
+  const bottomBand = allVisibleButtons.filter((x) => x.rect.top >= maxTop - 260)
+    .sort((a, b) => {
+      if (Math.abs(a.rect.top - b.rect.top) > 6) return a.rect.top - b.rect.top;
+      return a.rect.left - b.rect.left;
+    });
+
+  const targetButtons = (bottomBand.length > 0 ? bottomBand : allVisibleButtons)
+    .sort((a, b) => {
+      if (Math.abs(a.rect.top - b.rect.top) > 6) return a.rect.top - b.rect.top;
+      return a.rect.left - b.rect.left;
+    })
+    .slice(-30);
+
+  const visibleButtons = targetButtons.map(({ btn, domIndex }, displayIndex) => ({
     index: displayIndex,
     domIndex,
     label: text(btn),
