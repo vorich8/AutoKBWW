@@ -1324,7 +1324,7 @@ static (double? Min, double? Max) TryParseVolumeRange(string rawVolume)
 
 static async Task<bool> ClickChatByTitleAsync(IPage page, string titlePart)
 {
-    var target = await page.EvaluateAsync<ClickTarget?>("""
+    var targetData = await page.EvaluateAsync<JsonElement?>("""
 (titlePart) => {
   const normalize = (s) => (s || '').replace(/\s+/g, ' ').trim().toLowerCase();
   const wanted = normalize(titlePart);
@@ -1339,7 +1339,7 @@ static async Task<bool> ClickChatByTitleAsync(IPage page, string titlePart)
 }
 """, titlePart);
 
-    if (target is null) return false;
+    if (!TryReadClickTarget(targetData, out var target)) return false;
 
     await page.Mouse.MoveAsync((float)target.X, (float)target.Y);
     await page.Mouse.DownAsync();
@@ -1370,7 +1370,7 @@ static async Task<bool> SendMessageToCurrentChatAsync(IPage page, string message
 
 static async Task<bool> ClickVisibleButtonByTextAsync(IPage page, string expectedText, bool startsWith, bool containsOnly = false, bool preferExact = false)
 {
-    var target = await page.EvaluateAsync<ClickTarget?>("""
+    var targetData = await page.EvaluateAsync<JsonElement?>("""
 (args) => {
   const normalize = (s) => (s || '').replace(/\s+/g, ' ').trim().toLowerCase();
   const loose = (s) => normalize(s).replace(/[^\p{L}\p{N}]+/gu, '');
@@ -1415,7 +1415,7 @@ static async Task<bool> ClickVisibleButtonByTextAsync(IPage page, string expecte
 }
 """, new { expectedText, startsWith, containsOnly, preferExact });
 
-    if (target is null) return false;
+    if (!TryReadClickTarget(targetData, out var target)) return false;
 
     await page.Mouse.MoveAsync((float)target.X, (float)target.Y);
     await page.Mouse.DownAsync();
@@ -1425,7 +1425,7 @@ static async Task<bool> ClickVisibleButtonByTextAsync(IPage page, string expecte
 
 static async Task<bool> ClickVisibleButtonByIndexAsync(IPage page, int displayIndex, bool isAutomation = false)
 {
-    var target = await page.EvaluateAsync<ClickTarget?>("""
+    var targetData = await page.EvaluateAsync<JsonElement?>("""
 (displayIndex) => {
   const text = (el) => (el?.textContent || '').replace(/\s+/g, ' ').trim();
   const allVisibleButtons = Array.from(document.querySelectorAll('button, [role="button"], .reply-markup-button, .Button'))
@@ -1454,7 +1454,7 @@ static async Task<bool> ClickVisibleButtonByIndexAsync(IPage page, int displayIn
 }
 """, displayIndex);
 
-    if (target is null) return false;
+    if (!TryReadClickTarget(targetData, out var target)) return false;
 
     await page.Mouse.MoveAsync((float)target.X, (float)target.Y);
     await page.Mouse.DownAsync();
@@ -1582,6 +1582,33 @@ static string ResolveYandexBrowserPath()
     throw new FileNotFoundException("Не найден executable Яндекс Браузера. Укажите YANDEX_BROWSER_PATH.");
 }
 
+static bool TryReadClickTarget(JsonElement? data, out ClickTarget target)
+{
+    target = default;
+    if (data is null || data.Value.ValueKind != JsonValueKind.Object)
+    {
+        return false;
+    }
+
+    var value = data.Value;
+    if (!value.TryGetProperty("x", out var xElement) || xElement.ValueKind != JsonValueKind.Number)
+    {
+        return false;
+    }
+
+    if (!value.TryGetProperty("y", out var yElement) || yElement.ValueKind != JsonValueKind.Number)
+    {
+        return false;
+    }
+
+    var label = value.TryGetProperty("label", out var labelElement) && labelElement.ValueKind == JsonValueKind.String
+        ? labelElement.GetString() ?? string.Empty
+        : string.Empty;
+
+    target = new ClickTarget(xElement.GetDouble(), yElement.GetDouble(), label);
+    return true;
+}
+
 enum DealOutcome
 {
     Unknown,
@@ -1591,12 +1618,7 @@ enum DealOutcome
     Stopped
 }
 
-file sealed class ClickTarget
-{
-    public required double X { get; init; }
-    public required double Y { get; init; }
-    public required string Label { get; init; }
-}
+file readonly record struct ClickTarget(double X, double Y, string Label);
 
 file sealed class ButtonDebugInfo
 {
