@@ -407,6 +407,7 @@ async Task NotifyUsersWithTextAsync(IPage page, IReadOnlyList<string> users, str
 async Task<DealOutcome> WaitForDealOutcomeAsync(IPage page)
 {
     var checkCounter = 0;
+    var startedAt = DateTimeOffset.UtcNow;
 
     while (true)
     {
@@ -433,6 +434,12 @@ async Task<DealOutcome> WaitForDealOutcomeAsync(IPage page)
             Console.WriteLine("Итог сделки ещё не пришёл. Продолжаю ждать подтверждение/отказ...");
         }
 
+        if (DateTimeOffset.UtcNow - startedAt > TimeSpan.FromMinutes(11))
+        {
+            Console.WriteLine("Истекло время ожидания итога сделки (11 минут). Перезапускаю поиск.");
+            return DealOutcome.NeedRestart;
+        }
+
         await WaitWithStopAsync(page, 700);
     }
 }
@@ -443,23 +450,19 @@ async Task<DealOutcome> DetectDealOutcomeSignalAsync(IPage page)
 () => {
   const text = (el) => (el?.innerText || el?.textContent || '').replace(/\s+/g, ' ').trim().toLowerCase();
 
-  const actionButtons = Array.from(document.querySelectorAll('button, [role="button"], .reply-markup-button, .Button'));
-  if (actionButtons.some((b) => text(b).startsWith('посмотреть сделку'))) {
-    return 'accepted';
-  }
-
-  const messages = Array.from(document.querySelectorAll('.bubble, .message')).slice(-15);
-  for (let i = messages.length - 1; i >= 0; i--) {
+  const messages = Array.from(document.querySelectorAll('.bubble, .message')).slice(-60);
+  let lastSignal = 'unknown';
+  for (let i = 0; i < messages.length; i++) {
     const t = text(messages[i]);
     if (!t) continue;
-    if (t.includes('продавец принял сделку')) return 'accepted';
-    if (t.includes('продавец отказался от сделки')) return 'rejected';
+    if (t.includes('продавец принял сделку')) lastSignal = 'accepted';
+    if (t.includes('продавец отказался от сделки')) lastSignal = 'rejected';
     if (t.includes('цена объявления изменилась') || t.includes('пришлите сумму сделки') || t.includes('попробуйте повторить попытку быстрее') || t.includes('в пределах от')) {
-      return 'needrestart';
+      lastSignal = 'needrestart';
     }
   }
 
-  return 'unknown';
+  return lastSignal;
 }
 """);
 
