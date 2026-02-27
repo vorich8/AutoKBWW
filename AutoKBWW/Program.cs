@@ -290,7 +290,15 @@ async Task RunP2PAutomationAsync(IPage page)
 
         if (sellerAccepted)
         {
-            dealInfo = await OpenAcceptedDealDetailsAsync(page);
+            var acceptedDetails = await OpenAcceptedDealDetailsAfterAcceptAsync(page);
+            if (acceptedDetails is null)
+            {
+                Console.WriteLine("Продавец принял сделку, но не удалось открыть детали через 'Посмотреть сделку'.");
+                await NotifyUsersWithTextAsync(page, notificationUsers, "ПРОДАВЕЦ ПРИНЯЛ СДЕЛКУ, но не удалось открыть карточку 'Посмотреть сделку'.");
+                return;
+            }
+
+            dealInfo = acceptedDetails;
             PrintDealInfo(dealInfo);
         }
 
@@ -299,23 +307,21 @@ async Task RunP2PAutomationAsync(IPage page)
     }
 }
 
-async Task<DealInfo> OpenAcceptedDealDetailsAsync(IPage page)
+async Task<DealInfo?> OpenAcceptedDealDetailsAfterAcceptAsync(IPage page)
 {
-    Console.WriteLine("Сделка принята. Пробую открыть карточку кнопкой 'Посмотреть сделку'...");
+    Console.WriteLine("Сделка принята. Нажимаю 'Посмотреть сделку', затем делаю новый рескан сообщения...");
 
-    await WaitWithStopAsync(page, 1000);
-    if (stopAllRequested) return new DealInfo { MessageText = string.Empty, ActionButtonLabel = "(остановлено)" };
+    await WaitWithStopAsync(page, 500);
+    if (stopAllRequested) return null;
 
-    var opened = await ClickVisibleButtonByTextAsync(page, "Посмотреть сделку", startsWith: true, preferExact: true);
+    var opened = await ClickAnyDealActionButtonWithRetryAsync(page, "Посмотреть сделку", "Посмотреть");
     if (!opened)
     {
-        Console.WriteLine("Кнопка 'Посмотреть сделку' не найдена. Собираю текущий текст сделки.");
-        return await ExtractDealInfoWithRescansAsync(page, maxAttempts: 24);
+        return null;
     }
 
-    Console.WriteLine("Нажата кнопка 'Посмотреть сделку'. Жду 1 сек и собираю полное сообщение сделки...");
-    await WaitWithStopAsync(page, 1000);
-    if (stopAllRequested) return new DealInfo { MessageText = string.Empty, ActionButtonLabel = "(остановлено)" };
+    await WaitWithStopAsync(page, 500);
+    if (stopAllRequested) return null;
 
     return await ExtractDealInfoWithRescansAsync(page, maxAttempts: 30);
 }
