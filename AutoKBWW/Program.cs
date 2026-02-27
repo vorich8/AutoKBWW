@@ -599,7 +599,7 @@ async Task<bool> ExecuteDealActionFlowAsync(IPage page, P2POffer best)
 
 async Task<bool> ClickBuyButtonWithRetryAsync(IPage page)
 {
-    var byCommonText = await ClickAnyDealActionButtonWithRetryAsync(page, "Купить USDT", "Купить");
+    var byCommonText = await ClickAnyDealActionButtonWithRetryAsync(page, "Купить");
     if (byCommonText)
     {
         return true;
@@ -659,10 +659,9 @@ async Task<DealActionButtonsState> DetectDealActionButtonsStateAsync(IPage page)
         .Select(x => x.Trim())
         .ToList();
 
-    var hasBuy = labels.Any(label => label.StartsWith("Купить", StringComparison.OrdinalIgnoreCase));
-    var hasMax = labels.Any(label => label.StartsWith("Макс", StringComparison.OrdinalIgnoreCase));
-    var hasCreate = labels.Any(label => label.StartsWith("Создать сделку", StringComparison.OrdinalIgnoreCase)
-                                        || string.Equals(label, "Создать", StringComparison.OrdinalIgnoreCase));
+    var hasBuy = labels.Any(label => label.Contains("куп", StringComparison.OrdinalIgnoreCase));
+    var hasMax = labels.Any(label => label.Contains("макс", StringComparison.OrdinalIgnoreCase));
+    var hasCreate = labels.Any(label => label.Contains("созд", StringComparison.OrdinalIgnoreCase));
 
     return new DealActionButtonsState { HasBuy = hasBuy, HasMax = hasMax, HasCreate = hasCreate };
 }
@@ -1605,13 +1604,22 @@ static async Task<bool> ClickVisibleButtonByTextAsync(IPage page, string expecte
 
   const expected = normalize(args.expectedText);
   const expectedLoose = loose(args.expectedText);
+  const expectedTokens = expected.split(/\s+/).filter(Boolean);
+  const tokenMatch = (t) => expectedTokens.length > 0 && expectedTokens.every((token) => t.includes(token));
+
   const matches = allVisibleButtons.filter((btn) => {
     const t = normalize(text(btn));
     const tLoose = loose(text(btn));
     if (args.preferExact && t === expected) return true;
-    if (args.containsOnly) return t.includes(expected);
-    if (args.startsWith) return t.startsWith(expected) || (expectedLoose.length > 0 && tLoose.startsWith(expectedLoose));
-    return t.includes(expected) || (expectedLoose.length > 0 && tLoose.includes(expectedLoose));
+    if (args.containsOnly) return t.includes(expected) || tokenMatch(t);
+    if (args.startsWith)
+      return t.startsWith(expected)
+        || (expectedLoose.length > 0 && tLoose.startsWith(expectedLoose))
+        || tokenMatch(t);
+
+    return t.includes(expected)
+      || (expectedLoose.length > 0 && tLoose.includes(expectedLoose))
+      || tokenMatch(t);
   });
 
   if (!matches.length) return null;
