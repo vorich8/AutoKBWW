@@ -216,7 +216,7 @@ async Task RunP2PAutomationAsync(IPage page)
         var lower = dealInfo.MessageText?.ToLowerInvariant() ?? string.Empty;
         if (lower.Contains("продавец отказался от сделки"))
         {
-            await NotifyUsersWithTextAsync(page, notificationUsers, "Продавец отказался от сделки. Продолжаю искать новую.");
+            await NotifyRejectedDealToUsersAsync(page, notificationUsers, best, dealInfo);
             if (stopAllRequested) return;
 
             var restarted = await RestartP2PAfterRejectedDealAsync(page);
@@ -235,7 +235,10 @@ async Task RunP2PAutomationAsync(IPage page)
             var outcome = await WaitForDealOutcomeAsync(page);
             if (outcome == DealOutcome.Rejected)
             {
-                await NotifyUsersWithTextAsync(page, notificationUsers, "Продавец отказался от сделки. Продолжаю искать новую.");
+                var rejectedInfo = await ExtractDealInfoWithRescansAsync(page, maxAttempts: 12);
+                PrintDealInfo(rejectedInfo);
+
+                await NotifyRejectedDealToUsersAsync(page, notificationUsers, best, rejectedInfo);
                 if (stopAllRequested) return;
 
                 var restarted = await RestartP2PAfterRejectedDealAsync(page);
@@ -749,6 +752,62 @@ async Task SendNoDealsNotificationAsync(IPage page, IReadOnlyList<string> users)
     if (!backToBot)
     {
         Console.WriteLine("Не удалось вернуться в чат CryptoBot.");
+        return;
+    }
+
+    await WaitWithStopAsync(page, 2000);
+}
+
+async Task NotifyRejectedDealToUsersAsync(IPage page, IReadOnlyList<string> users, P2POffer best, DealInfo dealInfo)
+{
+    Console.WriteLine($"Отправляю уведомление об отмененной сделке пользователям: {string.Join(", ", users)}...");
+
+    var formattedDeal = FormatDealMessage(dealInfo.MessageText ?? string.Empty);
+    if (string.IsNullOrWhiteSpace(formattedDeal))
+    {
+        formattedDeal = "(текст сделки не удалось извлечь)";
+    }
+
+    var message = $"""
+Сделка отменена продавцом.
+Локальная пометка: [редактировано по правилам общения].
+
+Оффер: [{best.DisplayIndex}] {best.SourceLabel}
+
+Текст сделки:
+{formattedDeal}
+""";
+
+    foreach (var user in users)
+    {
+        await WaitWithStopAsync(page, 2000);
+        if (stopAllRequested) return;
+
+        var openedUser = await ClickChatByTitleAsync(page, user);
+        if (!openedUser)
+        {
+            Console.WriteLine($"Чат {user} не найден в закрепленных.");
+            continue;
+        }
+
+        await WaitWithStopAsync(page, 2000);
+        if (stopAllRequested) return;
+
+        Console.WriteLine($"Отправляю уведомление об отмене сделки в {user}...");
+        var sent = await SendMessageToCurrentChatAsync(page, message);
+        if (!sent)
+        {
+            Console.WriteLine($"Не удалось отправить сообщение об отмене сделки в {user}.");
+        }
+    }
+
+    await WaitWithStopAsync(page, 2000);
+    if (stopAllRequested) return;
+
+    var backToBot = await ClickChatByTitleAsync(page, "Crypto");
+    if (!backToBot)
+    {
+        Console.WriteLine("Не удалось вернуться в чат CryptoBot после уведомления об отмене сделки.");
         return;
     }
 
