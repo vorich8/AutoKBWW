@@ -841,6 +841,16 @@ async Task<double> ReadTargetPriceRubAsync(
     Func<(double? Price, DateTimeOffset At)> getCached,
     Action<(double Price, DateTimeOffset At)> setCached)
 {
+    var marketPreview = await TryGetMarketPricePreviewAsync(getCached, setCached);
+    if (marketPreview is null)
+    {
+        Console.WriteLine("Текущую рыночную цену USDT/RUB определить не удалось.");
+    }
+    else
+    {
+        Console.WriteLine($"Текущая рыночная цена USDT/RUB: {marketPreview.Value.ToString(CultureInfo.InvariantCulture)}");
+    }
+
     while (true)
     {
         Console.Write("Режим цены: 1 - рыночная, 2 - своя цена: ");
@@ -979,6 +989,26 @@ async Task WaitWithStopAsync(IPage page, int totalMs)
         await page.WaitForTimeoutAsync(step);
         remaining -= step;
     }
+}
+
+static async Task<double?> TryGetMarketPricePreviewAsync(
+    Func<(double? Price, DateTimeOffset At)> getCached,
+    Action<(double Price, DateTimeOffset At)> setCached)
+{
+    var cached = getCached();
+    if (cached.Price is not null && DateTimeOffset.UtcNow - cached.At < TimeSpan.FromMinutes(10))
+    {
+        return cached.Price.Value;
+    }
+
+    var market = await TryGetMarketPriceRubAsync();
+    if (market is null)
+    {
+        return null;
+    }
+
+    setCached((market.Value, DateTimeOffset.UtcNow));
+    return market.Value;
 }
 
 static async Task<double> ResolveMarketPriceAsync(
@@ -1205,7 +1235,7 @@ static int ScoreDealMessage(string message)
 
 static async Task<DealInfo> ExtractDealInfoAsync(IPage page)
 {
-    var data = await page.EvaluateAsync<DealInfo?>("""
+    var data = await page.EvaluateAsync<JsonElement>("""
 () => {
   const text = (el) => (el?.textContent || '').replace(/\s+/g, ' ').trim();
   const blockText = (el) => (el?.innerText || el?.textContent || '').replace(/\r/g, '').trim();
@@ -1241,7 +1271,12 @@ static async Task<DealInfo> ExtractDealInfoAsync(IPage page)
 }
 """);
 
-    return data ?? new DealInfo { MessageText = string.Empty, ActionButtonLabel = "(не удалось извлечь)" };
+    if (TryReadDealInfo(data, out var info))
+    {
+        return info;
+    }
+
+    return new DealInfo { MessageText = string.Empty, ActionButtonLabel = "(не удалось извлечь)" };
 }
 
 static string? TryBuildFullDealNotificationText(P2POffer best, DealInfo dealInfo)
@@ -1324,7 +1359,7 @@ static (double? Min, double? Max) TryParseVolumeRange(string rawVolume)
 
 static async Task<bool> ClickChatByTitleAsync(IPage page, string titlePart)
 {
-    var targetData = await page.EvaluateAsync<JsonElement?>("""
+    var targetData = await page.EvaluateAsync<JsonElement>("""
 (titlePart) => {
   const normalize = (s) => (s || '').replace(/\s+/g, ' ').trim().toLowerCase();
   const wanted = normalize(titlePart);
@@ -1370,7 +1405,7 @@ static async Task<bool> SendMessageToCurrentChatAsync(IPage page, string message
 
 static async Task<bool> ClickVisibleButtonByTextAsync(IPage page, string expectedText, bool startsWith, bool containsOnly = false, bool preferExact = false)
 {
-    var targetData = await page.EvaluateAsync<JsonElement?>("""
+    var targetData = await page.EvaluateAsync<JsonElement>("""
 (args) => {
   const normalize = (s) => (s || '').replace(/\s+/g, ' ').trim().toLowerCase();
   const loose = (s) => normalize(s).replace(/[^\p{L}\p{N}]+/gu, '');
@@ -1425,7 +1460,7 @@ static async Task<bool> ClickVisibleButtonByTextAsync(IPage page, string expecte
 
 static async Task<bool> ClickVisibleButtonByIndexAsync(IPage page, int displayIndex, bool isAutomation = false)
 {
-    var targetData = await page.EvaluateAsync<JsonElement?>("""
+    var targetData = await page.EvaluateAsync<JsonElement>("""
 (displayIndex) => {
   const text = (el) => (el?.textContent || '').replace(/\s+/g, ' ').trim();
   const allVisibleButtons = Array.from(document.querySelectorAll('button, [role="button"], .reply-markup-button, .Button'))
@@ -1582,15 +1617,39 @@ static string ResolveYandexBrowserPath()
     throw new FileNotFoundException("Не найден executable Яндекс Браузера. Укажите YANDEX_BROWSER_PATH.");
 }
 
-static bool TryReadClickTarget(JsonElement? data, out ClickTarget target)
+static bool TryReadDealInfo(JsonElement data, out DealInfo info)
 {
-    target = default;
-    if (data is null || data.Value.ValueKind != JsonValueKind.Object)
+    info = default!;
+    if (data.ValueKind != JsonValueKind.Object)
     {
         return false;
     }
 
-    var value = data.Value;
+    var messageText = data.TryGetProperty("MessageText", out var messageElement) && messageElement.ValueKind == JsonValueKind.String
+        ? messageElement.GetString() ?? string.Empty
+        : string.Empty;
+
+    var actionButtonLabel = data.TryGetProperty("ActionButtonLabel", out var actionElement) && actionElement.ValueKind == JsonValueKind.String
+        ? actionElement.GetString() ?? string.Empty
+        : string.Empty;
+
+    info = new DealInfo
+    {
+        MessageText = messageText,
+        ActionButtonLabel = string.IsNullOrWhiteSpace(actionButtonLabel) ? "(кнопка Купить* не найдена)" : actionButtonLabel
+    };
+    return true;
+}
+
+static bool TryReadClickTarget(JsonElement data, out ClickTarget target)
+{
+    target = default;
+    if (data.ValueKind != JsonValueKind.Object)
+    {
+        return false;
+    }
+
+    var value = data;
     if (!value.TryGetProperty("x", out var xElement) || xElement.ValueKind != JsonValueKind.Number)
     {
         return false;
