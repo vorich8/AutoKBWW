@@ -503,7 +503,7 @@ async Task<bool> ExecuteDealActionFlowAsync(IPage page, P2POffer best)
     await WaitWithStopAsync(page, 700);
     if (stopAllRequested) return false;
 
-    var buyClicked = await ClickAnyDealActionButtonWithRetryAsync(page, "Купить", "Купить USDT");
+    var buyClicked = await ClickBuyButtonWithRetryAsync(page);
     if (!buyClicked)
     {
         Console.WriteLine("Кнопка 'Купить' не найдена на экране сделки.");
@@ -566,13 +566,32 @@ async Task<bool> ExecuteDealActionFlowAsync(IPage page, P2POffer best)
     return false;
 }
 
+async Task<bool> ClickBuyButtonWithRetryAsync(IPage page)
+{
+    var byCommonText = await ClickAnyDealActionButtonWithRetryAsync(page, "Купить USDT", "Купить");
+    if (byCommonText)
+    {
+        return true;
+    }
+
+    Console.WriteLine("Стандартный поиск кнопки 'Купить' не сработал. Пробую прямой клик по видимой кнопке с текстом 'Купить...'.");
+    var directClicked = await ClickVisibleButtonByTextAsync(page, "Купить", startsWith: true);
+    if (directClicked)
+    {
+        Console.WriteLine("Успешно нажал 'Купить' через прямой поиск кнопки.");
+        return true;
+    }
+
+    return false;
+}
+
 async Task<bool> EnsureDealActionsOpenedAsync(IPage page)
 {
-    for (var attempt = 1; attempt <= 4; attempt++)
+    for (var attempt = 1; attempt <= 8; attempt++)
     {
         if (stopAllRequested) return false;
 
-        Console.WriteLine($"Жду 0.7 сек перед проверкой перехода к шагу сделки (попытка {attempt}/4)...");
+        Console.WriteLine($"Жду 0.7 сек перед проверкой перехода к шагу сделки (попытка {attempt}/8)...");
         await WaitWithStopAsync(page, 700);
         if (stopAllRequested) return false;
 
@@ -590,7 +609,7 @@ async Task<bool> EnsureDealActionsOpenedAsync(IPage page)
         }
 
         Console.WriteLine("Похоже, карточка сделки не открылась (кнопка 'Купить' всё ещё на месте). Пробую нажать 'Купить' повторно...");
-        var buyClicked = await ClickAnyDealActionButtonWithRetryAsync(page, "Купить", "Купить USDT");
+        var buyClicked = await ClickBuyButtonWithRetryAsync(page);
         if (!buyClicked)
         {
             Console.WriteLine("Повторно нажать 'Купить' не удалось.");
