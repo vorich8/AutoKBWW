@@ -510,40 +510,72 @@ async Task<bool> ExecuteDealActionFlowAsync(IPage page, P2POffer best)
         return false;
     }
 
-    Console.WriteLine("Жду 0.7 сек перед проверкой кнопки 'Макс.'...");
+    Console.WriteLine("Жду 0.7 сек перед анализом кнопок сделки...");
     await WaitWithStopAsync(page, 700);
     if (stopAllRequested) return false;
 
-    var maxClicked = await ClickAnyDealActionButtonWithRetryAsync(page, "Макс.", "Макс");
-    if (maxClicked)
+    var actionButtons = await DetectDealActionButtonsStateAsync(page);
+    Console.WriteLine($"Проверка кнопок сделки: Макс={actionButtons.HasMax}, Создать={actionButtons.HasCreate}.");
+
+    if (actionButtons.HasMax)
     {
-        Console.WriteLine("Нажата 'Макс.'. Жду 0.7 сек перед нажатием 'Создать сделку'...");
+        Console.WriteLine("Найдена кнопка 'Макс'. Нажимаю её перед созданием сделки...");
+        var maxClicked = await ClickAnyDealActionButtonWithRetryAsync(page, "Макс.", "Макс");
+        if (!maxClicked)
+        {
+            Console.WriteLine("Кнопка 'Макс' была обнаружена, но нажать её не удалось.");
+            return false;
+        }
+
+        Console.WriteLine("Нажата 'Макс'. Жду 0.7 сек перед нажатием 'Создать сделку'...");
         await WaitWithStopAsync(page, 700);
         if (stopAllRequested) return false;
 
         var createAfterMaxClicked = await ClickAnyDealActionButtonWithRetryAsync(page, "Создать сделку", "Создать");
         if (!createAfterMaxClicked)
         {
-            Console.WriteLine("Кнопка 'Создать сделку' не найдена после нажатия 'Макс.'.");
+            Console.WriteLine("Кнопка 'Создать сделку' не найдена после нажатия 'Макс'.");
             return false;
         }
 
         return true;
     }
 
-    Console.WriteLine("Кнопка 'Макс.' не найдена. Пробую сразу нажать 'Создать сделку'...");
-    Console.WriteLine("Жду 0.7 сек перед нажатием 'Создать сделку'...");
-    await WaitWithStopAsync(page, 700);
-    if (stopAllRequested) return false;
-
-    var createDealClicked = await ClickAnyDealActionButtonWithRetryAsync(page, "Создать сделку", "Создать");
-    if (!createDealClicked)
+    if (actionButtons.HasCreate)
     {
-        Console.WriteLine("Кнопка 'Создать сделку' не найдена.");
-        return false;
+        Console.WriteLine("Кнопки 'Макс' нет, но есть 'Создать сделку' (единый объем). Нажимаю сразу 'Создать сделку'...");
+        await WaitWithStopAsync(page, 700);
+        if (stopAllRequested) return false;
+
+        var createDealClicked = await ClickAnyDealActionButtonWithRetryAsync(page, "Создать сделку", "Создать");
+        if (!createDealClicked)
+        {
+            Console.WriteLine("Кнопка 'Создать сделку' была на экране, но нажать её не удалось.");
+            return false;
+        }
+
+        return true;
     }
 
-    return true;
+    Console.WriteLine("Не найдены ни 'Макс', ни 'Создать сделку'. Снимаю debug-список кнопок и прерываю шаг сделки.");
+    await LogVisibleButtonsAsync(page, "Кнопки в карточке сделки (ожидались 'Макс' или 'Создать сделку')");
+    return false;
+}
+
+async Task<DealActionButtonsState> DetectDealActionButtonsStateAsync(IPage page)
+{
+    var buttons = await CollectVisibleButtonsWithTimeoutAsync(page, timeoutMs: 1200);
+    var labels = buttons
+        .Select(x => x.Label)
+        .Where(x => !string.IsNullOrWhiteSpace(x))
+        .Select(x => x.Trim())
+        .ToList();
+
+    var hasMax = labels.Any(label => label.StartsWith("Макс", StringComparison.OrdinalIgnoreCase));
+    var hasCreate = labels.Any(label => label.StartsWith("Создать сделку", StringComparison.OrdinalIgnoreCase)
+                                        || string.Equals(label, "Создать", StringComparison.OrdinalIgnoreCase));
+
+    return new DealActionButtonsState { HasMax = hasMax, HasCreate = hasCreate };
 }
 
 async Task<bool> ClickDealActionButtonWithRetryAsync(IPage page, string buttonText)
@@ -1836,6 +1868,12 @@ enum DealOutcome
 }
 
 file readonly record struct ClickTarget(double X, double Y, string Label);
+
+file sealed class DealActionButtonsState
+{
+    public required bool HasMax { get; init; }
+    public required bool HasCreate { get; init; }
+}
 
 file sealed class ButtonDebugInfo
 {
