@@ -580,18 +580,43 @@ async Task<bool> ExecuteDealActionFlowAsync(IPage page, P2POffer best, VolumeFil
             return false;
         }
 
-        Console.WriteLine("Нажата 'Макс'. Жду 0.25 сек перед нажатием 'Создать сделку'...");
+        Console.WriteLine("Нажата 'Макс'. Делаю повторный рескан кнопок после обновления суммы...");
         await WaitWithStopAsync(page, 250);
         if (stopAllRequested) return false;
 
-        var createAfterMaxClicked = await ClickAnyDealActionButtonWithRetryAsync(page, "Созд");
-        if (!createAfterMaxClicked)
+        var afterMaxState = await DetectDealActionButtonsStateAsync(page);
+        Console.WriteLine($"После 'Макс': Купить={afterMaxState.HasBuy}, Макс={afterMaxState.HasMax}, Создать={afterMaxState.HasCreate}, УказатьRUB={afterMaxState.HasSpecifyRub}.");
+
+        if (!afterMaxState.HasCreate && !afterMaxState.HasSpecifyRub)
         {
-            Console.WriteLine("Кнопка 'Создать сделку' не найдена после нажатия 'Макс'.");
-            return false;
+            await WaitWithStopAsync(page, 250);
+            if (stopAllRequested) return false;
+
+            afterMaxState = await DetectDealActionButtonsStateAsync(page);
+            Console.WriteLine($"Повторный рескан после 'Макс': Купить={afterMaxState.HasBuy}, Макс={afterMaxState.HasMax}, Создать={afterMaxState.HasCreate}, УказатьRUB={afterMaxState.HasSpecifyRub}.");
         }
 
-        return true;
+        if (afterMaxState.HasCreate)
+        {
+            var createAfterMaxClicked = await ClickAnyDealActionButtonWithRetryAsync(page, "Созд");
+            if (!createAfterMaxClicked)
+            {
+                Console.WriteLine("Кнопка 'Создать сделку' не найдена после нажатия 'Макс'.");
+                return false;
+            }
+
+            return true;
+        }
+
+        if (afterMaxState.HasSpecifyRub)
+        {
+            Console.WriteLine("После 'Макс' доступна ветка 'Указать в RUB'. Перехожу к ней.");
+            return await ExecuteSpecifyRubAmountFlowAsync(page, volumeFilter.MaxRub);
+        }
+
+        Console.WriteLine("После 'Макс' не нашел ни 'Создать', ни 'Указать в RUB'.");
+        await LogVisibleButtonsAsync(page, "Кнопки после нажатия 'Макс'");
+        return false;
     }
 
     if (actionButtons.HasCreate)
