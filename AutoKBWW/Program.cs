@@ -174,7 +174,7 @@ async Task RunP2PAutomationAsync(IPage page)
             continue;
         }
 
-        var actionFlowCompleted = await ExecuteDealActionFlowAsync(page, best);
+        var actionFlowCompleted = await ExecuteDealActionFlowAsync(page, best, volumeFilter);
         if (stopAllRequested)
         {
             await StopWithNotifyAsync("Автоматизация остановлена клавишей S.");
@@ -519,7 +519,7 @@ bool HasDealCreationProblem(string lowerMessage)
            || lowerMessage.Contains("в пределах от");
 }
 
-async Task<bool> ExecuteDealActionFlowAsync(IPage page, P2POffer best)
+async Task<bool> ExecuteDealActionFlowAsync(IPage page, P2POffer best, VolumeFilter volumeFilter)
 {
     if (best is null)
     {
@@ -550,7 +550,13 @@ async Task<bool> ExecuteDealActionFlowAsync(IPage page, P2POffer best)
     }
 
     var actionButtons = await DetectDealActionButtonsStateAsync(page);
-    Console.WriteLine($"Проверка кнопок сделки: Купить={actionButtons.HasBuy}, Макс={actionButtons.HasMax}, Создать={actionButtons.HasCreate}.");
+    Console.WriteLine($"Проверка кнопок сделки: Купить={actionButtons.HasBuy}, Макс={actionButtons.HasMax}, Создать={actionButtons.HasCreate}, УказатьRUB={actionButtons.HasSpecifyRub}.");
+
+    if (ShouldUseSpecifyRubFlow(best, volumeFilter, actionButtons))
+    {
+        Console.WriteLine($"Подходящий объём ограничен максимумом {volumeFilter.MaxRub.ToString(CultureInfo.InvariantCulture)} RUB. Использую ветку 'Указать в RUB'.");
+        return await ExecuteSpecifyRubAmountFlowAsync(page, volumeFilter.MaxRub);
+    }
 
     if (actionButtons.HasMax)
     {
@@ -595,6 +601,61 @@ async Task<bool> ExecuteDealActionFlowAsync(IPage page, P2POffer best)
     Console.WriteLine("Не найдены ни 'Макс', ни 'Создать сделку'. Снимаю debug-список кнопок и прерываю шаг сделки.");
     await LogVisibleButtonsAsync(page, "Кнопки в карточке сделки (ожидались 'Макс' или 'Создать сделку')");
     return false;
+}
+
+bool ShouldUseSpecifyRubFlow(P2POffer offer, VolumeFilter volumeFilter, DealActionButtonsState state)
+{
+    if (volumeFilter.MinRub is not null)
+    {
+        return false;
+    }
+
+    if (!state.HasSpecifyRub)
+    {
+        return false;
+    }
+
+    if (offer.VolumeMax is null)
+    {
+        return false;
+    }
+
+    return offer.VolumeMax.Value > volumeFilter.MaxRub + 0.01;
+}
+
+async Task<bool> ExecuteSpecifyRubAmountFlowAsync(IPage page, double targetRub)
+{
+    var specifyClicked = await ClickAnyDealActionButtonWithRetryAsync(page, "Указать в RUB", "Указать RUB", "Указать в руб", "Указать");
+    if (!specifyClicked)
+    {
+        Console.WriteLine("Кнопка 'Указать в RUB' не найдена.");
+        return false;
+    }
+
+    await WaitWithStopAsync(page, 700);
+    if (stopAllRequested) return false;
+
+    var amountText = ((int)Math.Round(targetRub, MidpointRounding.AwayFromZero)).ToString(CultureInfo.InvariantCulture);
+    Console.WriteLine($"Отправляю сумму сделки в RUB: {amountText}");
+
+    var amountSent = await SendMessageToCurrentChatAsync(page, amountText);
+    if (!amountSent)
+    {
+        Console.WriteLine("Не удалось отправить сумму в RUB.");
+        return false;
+    }
+
+    await WaitWithStopAsync(page, 700);
+    if (stopAllRequested) return false;
+
+    var createClicked = await ClickAnyDealActionButtonWithRetryAsync(page, "Создать сделку", "Создать");
+    if (!createClicked)
+    {
+        Console.WriteLine("Кнопка 'Создать сделку' не найдена после указания RUB.");
+        return false;
+    }
+
+    return true;
 }
 
 async Task<bool> ClickBuyButtonWithRetryAsync(IPage page)
@@ -662,8 +723,11 @@ async Task<DealActionButtonsState> DetectDealActionButtonsStateAsync(IPage page)
     var hasBuy = labels.Any(label => label.Contains("куп", StringComparison.OrdinalIgnoreCase));
     var hasMax = labels.Any(label => label.Contains("макс", StringComparison.OrdinalIgnoreCase));
     var hasCreate = labels.Any(label => label.Contains("созд", StringComparison.OrdinalIgnoreCase));
+    var hasSpecifyRub = labels.Any(label => label.Contains("rub", StringComparison.OrdinalIgnoreCase)
+                                            && (label.Contains("указ", StringComparison.OrdinalIgnoreCase)
+                                                || label.Contains("ввест", StringComparison.OrdinalIgnoreCase)));
 
-    return new DealActionButtonsState { HasBuy = hasBuy, HasMax = hasMax, HasCreate = hasCreate };
+    return new DealActionButtonsState { HasBuy = hasBuy, HasMax = hasMax, HasCreate = hasCreate, HasSpecifyRub = hasSpecifyRub };
 }
 
 async Task<bool> ClickDealActionButtonWithRetryAsync(IPage page, string buttonText)
@@ -984,7 +1048,7 @@ async Task NotifyFoundDealToUsersAsync(IPage page, IReadOnlyList<string> users, 
 
 IReadOnlyList<string> ReadNotificationUsers()
 {
-    Console.Write("Введите ники получателей уведомлений через запятую (Enter = VO8R, gg): ");
+    Console.Write("Введите ники получателей уведомлений через запятую (Enter = VO8R): ");
     var input = Console.ReadLine();
     var users = (input ?? string.Empty)
         .Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries)
@@ -993,7 +1057,7 @@ IReadOnlyList<string> ReadNotificationUsers()
 
     if (users.Count == 0)
     {
-        users = ["VO8R", "gg"];
+        users = ["VO8R"];
     }
 
     return users;
@@ -1971,6 +2035,7 @@ file sealed class DealActionButtonsState
     public required bool HasBuy { get; init; }
     public required bool HasMax { get; init; }
     public required bool HasCreate { get; init; }
+    public required bool HasSpecifyRub { get; init; }
 }
 
 file sealed class ButtonDebugInfo
