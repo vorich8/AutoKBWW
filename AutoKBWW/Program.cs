@@ -232,7 +232,7 @@ async Task RunP2PAutomationAsync(IPage page)
         if (!lower.Contains("продавец принял сделку"))
         {
             Console.WriteLine("Жду итог сделки: принятие, отказ или сообщение о проблеме цены/суммы...");
-            var outcome = await WaitForDealOutcomeAsync(page);
+            var outcome = await WaitForDealOutcomeAsync(page, dealInfo);
             if (outcome == DealOutcome.Rejected)
             {
                 var rejectedInfo = await ExtractDealInfoWithRescansAsync(page, maxAttempts: 12);
@@ -407,10 +407,15 @@ async Task NotifyUsersWithTextAsync(IPage page, IReadOnlyList<string> users, str
     await WaitWithStopAsync(page, 2000);
 }
 
-async Task<DealOutcome> WaitForDealOutcomeAsync(IPage page)
+async Task<DealOutcome> WaitForDealOutcomeAsync(IPage page, DealInfo initialDealInfo)
 {
     var checkCounter = 0;
     var startedAt = DateTimeOffset.UtcNow;
+    var dealId = ExtractDealId(initialDealInfo.MessageText);
+    if (!string.IsNullOrWhiteSpace(dealId))
+    {
+        Console.WriteLine($"Ожидаю исход по сделке #{dealId}.");
+    }
 
     while (true)
     {
@@ -419,16 +424,21 @@ async Task<DealOutcome> WaitForDealOutcomeAsync(IPage page)
             return DealOutcome.Stopped;
         }
 
-        var fastSignal = await DetectDealOutcomeSignalAsync(page);
+        var fastSignal = await DetectDealOutcomeSignalAsync(page, dealId);
         if (fastSignal != DealOutcome.Unknown)
         {
             return fastSignal;
         }
 
         var dealInfo = await ExtractDealInfoAsync(page);
+        if (string.IsNullOrWhiteSpace(dealId))
+        {
+            dealId = ExtractDealId(dealInfo.MessageText);
+        }
+
         var lower = dealInfo.MessageText?.ToLowerInvariant() ?? string.Empty;
         if (lower.Contains("продавец принял сделку")) return DealOutcome.Accepted;
-        if (lower.Contains("продавец отказался от сделки")) return DealOutcome.Rejected;
+        if (lower.Contains("продавец отказался от сделки") && !string.IsNullOrWhiteSpace(dealId)) return DealOutcome.Rejected;
         if (HasDealCreationProblem(lower)) return DealOutcome.NeedRestart;
 
         checkCounter++;
@@ -447,27 +457,32 @@ async Task<DealOutcome> WaitForDealOutcomeAsync(IPage page)
     }
 }
 
-async Task<DealOutcome> DetectDealOutcomeSignalAsync(IPage page)
+async Task<DealOutcome> DetectDealOutcomeSignalAsync(IPage page, string? dealId)
 {
     var signal = await page.EvaluateAsync<string>("""
-() => {
+(args) => {
   const text = (el) => (el?.innerText || el?.textContent || '').replace(/\s+/g, ' ').trim().toLowerCase();
+  const wantedDealId = (args?.dealId || '').toString().trim().toLowerCase();
 
   const messages = Array.from(document.querySelectorAll('.bubble, .message')).slice(-60);
-  let lastSignal = 'unknown';
-  for (let i = 0; i < messages.length; i++) {
+  for (let i = messages.length - 1; i >= 0; i--) {
     const t = text(messages[i]);
     if (!t) continue;
-    if (t.includes('продавец принял сделку')) lastSignal = 'accepted';
-    if (t.includes('продавец отказался от сделки')) lastSignal = 'rejected';
+
+    const fitsDeal = wantedDealId.length === 0 ? true : t.includes(`#${wantedDealId}`) || t.includes(`сделк` ) && t.includes(wantedDealId);
+
+    if (t.includes('продавец принял сделку') && fitsDeal) return 'accepted';
+
+    if (wantedDealId.length > 0 && t.includes('продавец отказался от сделки') && fitsDeal) return 'rejected';
+
     if (t.includes('цена объявления изменилась') || t.includes('пришлите сумму сделки') || t.includes('попробуйте повторить попытку быстрее') || t.includes('в пределах от')) {
-      lastSignal = 'needrestart';
+      return 'needrestart';
     }
   }
 
-  return lastSignal;
+  return 'unknown';
 }
-""");
+""", new { dealId = dealId ?? string.Empty });
 
     return signal switch
     {
@@ -476,6 +491,22 @@ async Task<DealOutcome> DetectDealOutcomeSignalAsync(IPage page)
         "needrestart" => DealOutcome.NeedRestart,
         _ => DealOutcome.Unknown
     };
+}
+
+static string? ExtractDealId(string? message)
+{
+    if (string.IsNullOrWhiteSpace(message))
+    {
+        return null;
+    }
+
+    var match = Regex.Match(message, @"сделка\s*#\s*([a-z0-9]+)", RegexOptions.IgnoreCase);
+    if (!match.Success || match.Groups.Count < 2)
+    {
+        return null;
+    }
+
+    return match.Groups[1].Value.Trim();
 }
 
 bool HasDealCreationProblem(string lowerMessage)
