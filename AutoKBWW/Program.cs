@@ -303,6 +303,25 @@ async Task WaitForVo8rReactionDebugAsync(IPage page, SaleDealNotification deal)
             }
         }
 
+        if (hasReaction)
+        {
+            Console.WriteLine("[VO8R] Реакция подтверждена. Возвращаюсь в чат Crypto Bot...");
+            await WaitWithStopAsync(page, 1000);
+            if (stopAllRequested) break;
+
+            var backToBot = await ClickChatByTitleAsync(page, "Crypto");
+            if (!backToBot)
+            {
+                Console.WriteLine("[VO8R] Не удалось вернуться в чат Crypto Bot после обнаружения реакции.");
+            }
+            else
+            {
+                Console.WriteLine("[VO8R] Успешно вернулся в чат Crypto Bot после реакции.");
+            }
+
+            break;
+        }
+
         await WaitWithStopAsync(page, 1000);
     }
 
