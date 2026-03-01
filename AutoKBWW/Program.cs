@@ -260,6 +260,7 @@ async Task<bool> NotifyCreatedSaleDealAsync(IPage page, IReadOnlyList<string> us
 async Task WaitForVo8rReactionDebugAsync(IPage page, SaleDealNotification deal)
 {
     Console.WriteLine($"Перешел в чат VO8R. Жду реакции на сообщение по сделке #{deal.DealId}. Для остановки нажмите S.");
+    var reactionAlreadySeen = false;
 
     while (!stopAllRequested)
     {
@@ -270,6 +271,18 @@ async Task WaitForVo8rReactionDebugAsync(IPage page, SaleDealNotification deal)
         if (!string.IsNullOrWhiteSpace(scan.MessageTextPreview))
         {
             Console.WriteLine($"[VO8R] Сообщение: {scan.MessageTextPreview}");
+        }
+
+        var hasReaction = scan.ReactionNodeCount > 0 || scan.ReactionTexts.Count > 0;
+        if (hasReaction && !reactionAlreadySeen)
+        {
+            reactionAlreadySeen = true;
+            Console.WriteLine($"[VO8R] ✅ Обнаружена реакция на сообщение сделки #{deal.DealId}.");
+        }
+        else if (!hasReaction && reactionAlreadySeen)
+        {
+            reactionAlreadySeen = false;
+            Console.WriteLine($"[VO8R] ℹ️ Реакция больше не видна для сделки #{deal.DealId}.");
         }
 
         if (scan.ReactionTexts.Count > 0)
@@ -1226,7 +1239,7 @@ async Task<P2POffer?> FindBestOfferWithPagingAsync(IPage page, double targetPric
 
         if (DateTimeOffset.UtcNow - lastNoDealNotifyAt >= TimeSpan.FromMinutes(5))
         {
-            await SendNoDealsNotificationAsync(page, notificationUsers, startedAt)
+            await SendNoDealsNotificationAsync(page, notificationUsers, startedAt);
             if (stopAllRequested)
             {
                 Console.WriteLine("Поиск остановлен клавишей S.");
