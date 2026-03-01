@@ -337,7 +337,7 @@ async Task<bool> ClickAnyDynamicActionButtonAsync(IPage page)
     };
 
     var candidate = labels
-        .Select(x => (Original: x, Normalized: x.Trim()))
+        .Select(x => (Original: x.Label, Normalized: x.Label.Trim()))
         .FirstOrDefault(x => !string.IsNullOrWhiteSpace(x.Normalized)
                              && x.Normalized != "?"
                              && !ignored.Any(prefix => x.Normalized.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)));
