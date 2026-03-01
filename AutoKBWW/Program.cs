@@ -83,9 +83,16 @@ async Task RunInteractiveLoopAsync(IPage page)
             continue;
         }
 
+        if (string.Equals(input, "W", StringComparison.OrdinalIgnoreCase) || string.Equals(input, "WATCH", StringComparison.OrdinalIgnoreCase))
+        {
+            await RunSalesDealsWatcherAsync(page);
+            PrintCommandsHint();
+            continue;
+        }
+
         if (!int.TryParse(input, out var displayIndex))
         {
-            Console.WriteLine("Некорректный ввод. Укажите индекс, A, R, S или Q.");
+            Console.WriteLine("Некорректный ввод. Укажите индекс, A, W, R, S или Q.");
             PrintCommandsHint();
             continue;
         }
@@ -106,7 +113,130 @@ async Task RunInteractiveLoopAsync(IPage page)
 
 static void PrintCommandsHint()
 {
-    Console.WriteLine("Команды: индекс кнопки (0..), A - автосценарий P2P, R - перескан, S - стоп автоматики, Q - выход.");
+    Console.WriteLine("Команды: индекс кнопки (0..), A - автосценарий P2P, W - мониторинг новых сделок продажи, R - перескан, S - стоп автоматики, Q - выход.");
+}
+
+async Task RunSalesDealsWatcherAsync(IPage page)
+{
+    stopAllRequested = false;
+
+    var notificationUsers = ReadNotificationUsers();
+    Console.WriteLine($"Мониторинг продаж: уведомления будут отправляться: {string.Join(", ", notificationUsers)}");
+    Console.WriteLine("Запускаю мониторинг. Ищу новые сообщения вида '💡 Создана новая сделка ...'. Для остановки нажмите S.");
+
+    string? lastNotifiedDealId = null;
+
+    while (!stopAllRequested)
+    {
+        var latestMessage = await ExtractLatestMessageTextAsync(page);
+        if (TryParseCreatedSaleDeal(latestMessage, out var saleDeal))
+        {
+            if (!string.Equals(lastNotifiedDealId, saleDeal.DealId, StringComparison.OrdinalIgnoreCase))
+            {
+                Console.WriteLine($"Найдена новая сделка продажи: #{saleDeal.DealId}, {saleDeal.AmountRub} RUB, банк: {saleDeal.Bank}.");
+                await NotifyCreatedSaleDealAsync(page, notificationUsers, saleDeal);
+                if (stopAllRequested) return;
+
+                lastNotifiedDealId = saleDeal.DealId;
+            }
+        }
+
+        await WaitWithStopAsync(page, 1000);
+    }
+
+    Console.WriteLine("Мониторинг новых сделок продажи остановлен.");
+}
+
+static async Task<string> ExtractLatestMessageTextAsync(IPage page)
+{
+    var text = await page.EvaluateAsync<string>("""
+() => {
+  const blockText = (el) => (el?.innerText || el?.textContent || '').replace(/\r/g, '').trim();
+  const messages = Array.from(document.querySelectorAll('.bubble, .message'));
+  const last = messages.at(-1);
+  if (!last) return '';
+
+  return blockText(last.querySelector('.bubble-content-wrapper')) || blockText(last);
+}
+""");
+
+    return text ?? string.Empty;
+}
+
+static bool TryParseCreatedSaleDeal(string message, out SaleDealNotification deal)
+{
+    deal = default!;
+    if (string.IsNullOrWhiteSpace(message))
+    {
+        return false;
+    }
+
+    var match = Regex.Match(
+        message,
+        @"создана\s+новая\s+сделка\s*#(?<id>[a-z0-9]+).*?за\s*(?:🪙\s*)?(?<amount>[0-9\s.,]+)\s*rub.*?через\s*(?<bank>[^.\r\n]+)",
+        RegexOptions.IgnoreCase | RegexOptions.Singleline);
+
+    if (!match.Success)
+    {
+        return false;
+    }
+
+    var dealId = match.Groups["id"].Value.Trim();
+    var amount = Regex.Replace(match.Groups["amount"].Value, @"\s+", " ").Trim();
+    var bank = match.Groups["bank"].Value.Trim();
+
+    if (string.IsNullOrWhiteSpace(dealId) || string.IsNullOrWhiteSpace(amount) || string.IsNullOrWhiteSpace(bank))
+    {
+        return false;
+    }
+
+    deal = new SaleDealNotification
+    {
+        DealId = dealId,
+        AmountRub = amount,
+        Bank = bank
+    };
+
+    return true;
+}
+
+async Task NotifyCreatedSaleDealAsync(IPage page, IReadOnlyList<string> users, SaleDealNotification deal)
+{
+    var message = $"Создана новая сделка - #{deal.DealId} на {deal.AmountRub} RUB через {deal.Bank}";
+
+    foreach (var user in users)
+    {
+        await WaitWithStopAsync(page, 1000);
+        if (stopAllRequested) return;
+
+        var openedUser = await ClickChatByTitleAsync(page, user);
+        if (!openedUser)
+        {
+            Console.WriteLine($"Чат {user} не найден в закрепленных.");
+            continue;
+        }
+
+        await WaitWithStopAsync(page, 1000);
+        if (stopAllRequested) return;
+
+        var sent = await SendMessageToCurrentChatAsync(page, message);
+        if (!sent)
+        {
+            Console.WriteLine($"Не удалось отправить уведомление о новой сделке в {user}.");
+        }
+    }
+
+    await WaitWithStopAsync(page, 1000);
+    if (stopAllRequested) return;
+
+    var backToBot = await ClickChatByTitleAsync(page, "Crypto");
+    if (!backToBot)
+    {
+        Console.WriteLine("Не удалось вернуться в чат CryptoBot после уведомления о новой сделке.");
+        return;
+    }
+
+    await WaitWithStopAsync(page, 1000);
 }
 
 async Task RunP2PAutomationAsync(IPage page)
@@ -2110,6 +2240,13 @@ file sealed class DealActionButtonsState
     public required bool HasMax { get; init; }
     public required bool HasCreate { get; init; }
     public required bool HasSpecifyRub { get; init; }
+}
+
+file sealed class SaleDealNotification
+{
+    public required string DealId { get; init; }
+    public required string AmountRub { get; init; }
+    public required string Bank { get; init; }
 }
 
 file sealed class ButtonDebugInfo
