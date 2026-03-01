@@ -260,72 +260,168 @@ async Task<bool> NotifyCreatedSaleDealAsync(IPage page, IReadOnlyList<string> us
 async Task WaitForVo8rReactionDebugAsync(IPage page, SaleDealNotification deal)
 {
     Console.WriteLine($"Перешел в чат VO8R. Жду реакции на сообщение по сделке #{deal.DealId}. Для остановки нажмите S.");
-    var reactionAlreadySeen = false;
+    Console.WriteLine("Если реакции нет 1 минуту — запускаю звонок, затем проверяю еще 30 сек и повторяю до появления реакции.");
+
+    var initialWaitUntil = DateTimeOffset.UtcNow.AddMinutes(1);
 
     while (!stopAllRequested)
     {
         var scan = await CollectVo8rReactionScanAsync(page, deal.DealId);
-
-        Console.WriteLine($"[VO8R][{DateTime.Now:HH:mm:ss}] Поиск реакции: messageFound={scan.MessageFound}, outgoing={scan.IsOutgoing}, reactionNodes={scan.ReactionNodeCount}, reactionTexts={scan.ReactionTexts.Count}");
-
-        if (!string.IsNullOrWhiteSpace(scan.MessageTextPreview))
-        {
-            Console.WriteLine($"[VO8R] Сообщение: {scan.MessageTextPreview}");
-        }
-
-        var hasReaction = scan.ReactionNodeCount > 0 || scan.ReactionTexts.Count > 0;
-        if (hasReaction && !reactionAlreadySeen)
-        {
-            reactionAlreadySeen = true;
-            Console.WriteLine($"[VO8R] ✅ Обнаружена реакция на сообщение сделки #{deal.DealId}.");
-        }
-        else if (!hasReaction && reactionAlreadySeen)
-        {
-            reactionAlreadySeen = false;
-            Console.WriteLine($"[VO8R] ℹ️ Реакция больше не видна для сделки #{deal.DealId}.");
-        }
-
-        if (scan.ReactionTexts.Count > 0)
-        {
-            Console.WriteLine("[VO8R] Найдены тексты/эмодзи реакций:");
-            foreach (var reaction in scan.ReactionTexts)
-            {
-                Console.WriteLine($"  - {reaction}");
-            }
-        }
-
-        if (scan.DebugNodes.Count > 0)
-        {
-            Console.WriteLine("[VO8R] Debug-узлы вокруг реакций:");
-            foreach (var node in scan.DebugNodes)
-            {
-                Console.WriteLine($"  - {node}");
-            }
-        }
+        var hasReaction = LogVo8rReactionScan(scan, deal.DealId);
 
         if (hasReaction)
         {
-            Console.WriteLine("[VO8R] Реакция подтверждена. Возвращаюсь в чат Crypto Bot...");
-            await WaitWithStopAsync(page, 1000);
-            if (stopAllRequested) break;
-
-            var backToBot = await ClickChatByTitleAsync(page, "Crypto");
-            if (!backToBot)
-            {
-                Console.WriteLine("[VO8R] Не удалось вернуться в чат Crypto Bot после обнаружения реакции.");
-            }
-            else
-            {
-                Console.WriteLine("[VO8R] Успешно вернулся в чат Crypto Bot после реакции.");
-            }
-
-            break;
+            await ReturnToCryptoBotAfterReactionAsync(page, deal.DealId);
+            return;
         }
 
-        await WaitWithStopAsync(page, 1000);
+        if (DateTimeOffset.UtcNow < initialWaitUntil)
+        {
+            await WaitWithStopAsync(page, 1000);
+            continue;
+        }
+
+        Console.WriteLine("[VO8R] Реакции нет 1 минуту. Нажимаю на звонок...");
+        var startedCall = await ClickVo8rCallButtonAsync(page);
+        if (!startedCall)
+        {
+            Console.WriteLine("[VO8R] Не удалось нажать кнопку звонка. Повторяю проверку через 1 сек.");
+            await WaitWithStopAsync(page, 1000);
+            continue;
+        }
+
+        await WaitWithStopAsync(page, 1200);
+        if (stopAllRequested) break;
+
+        var outgoingCallSeen = await DetectOutgoingCallMessageAsync(page);
+        Console.WriteLine(outgoingCallSeen
+            ? "[VO8R] Обнаружено системное сообщение 'Outgoing Call'."
+            : "[VO8R] Сообщение 'Outgoing Call' пока не найдено, продолжаю ожидание реакции.");
+
+        var callWaitUntil = DateTimeOffset.UtcNow.AddSeconds(30);
+        while (!stopAllRequested && DateTimeOffset.UtcNow < callWaitUntil)
+        {
+            var callScan = await CollectVo8rReactionScanAsync(page, deal.DealId);
+            var callHasReaction = LogVo8rReactionScan(callScan, deal.DealId);
+            if (callHasReaction)
+            {
+                await ReturnToCryptoBotAfterReactionAsync(page, deal.DealId);
+                return;
+            }
+
+            await WaitWithStopAsync(page, 1000);
+        }
+
+        Console.WriteLine("[VO8R] После звонка и 30 сек ожидания реакции нет. Звоню повторно...");
     }
 
     Console.WriteLine("Ожидание реакции в чате VO8R остановлено.");
+}
+
+static bool LogVo8rReactionScan(SaleDealReactionScan scan, string dealId)
+{
+    Console.WriteLine($"[VO8R][{DateTime.Now:HH:mm:ss}] Поиск реакции: messageFound={scan.MessageFound}, outgoing={scan.IsOutgoing}, reactionNodes={scan.ReactionNodeCount}, reactionTexts={scan.ReactionTexts.Count}");
+
+    if (!string.IsNullOrWhiteSpace(scan.MessageTextPreview))
+    {
+        Console.WriteLine($"[VO8R] Сообщение: {scan.MessageTextPreview}");
+    }
+
+    var hasReaction = scan.ReactionNodeCount > 0 || scan.ReactionTexts.Count > 0;
+    if (hasReaction)
+    {
+        Console.WriteLine($"[VO8R] ✅ Обнаружена реакция на сообщение сделки #{dealId}.");
+    }
+
+    if (scan.ReactionTexts.Count > 0)
+    {
+        Console.WriteLine("[VO8R] Найдены тексты/эмодзи реакций:");
+        foreach (var reaction in scan.ReactionTexts)
+        {
+            Console.WriteLine($"  - {reaction}");
+        }
+    }
+
+    if (scan.DebugNodes.Count > 0)
+    {
+        Console.WriteLine("[VO8R] Debug-узлы вокруг реакций:");
+        foreach (var node in scan.DebugNodes)
+        {
+            Console.WriteLine($"  - {node}");
+        }
+    }
+
+    return hasReaction;
+}
+
+async Task ReturnToCryptoBotAfterReactionAsync(IPage page, string dealId)
+{
+    Console.WriteLine($"[VO8R] Реакция подтверждена для сделки #{dealId}. Возвращаюсь в чат Crypto Bot...");
+    await WaitWithStopAsync(page, 1000);
+    if (stopAllRequested) return;
+
+    var backToBot = await ClickChatByTitleAsync(page, "Crypto");
+    if (!backToBot)
+    {
+        Console.WriteLine("[VO8R] Не удалось вернуться в чат Crypto Bot после обнаружения реакции.");
+    }
+    else
+    {
+        Console.WriteLine("[VO8R] Успешно вернулся в чат Crypto Bot после реакции.");
+    }
+}
+
+static async Task<bool> ClickVo8rCallButtonAsync(IPage page)
+{
+    var clicked = await page.EvaluateAsync<bool>("""
+() => {
+  const candidates = Array.from(document.querySelectorAll('.chat-utils .btn-icon.rp, .chat-utils .btn-icon'));
+  if (candidates.length === 0) return false;
+
+  const isVisible = (el) => {
+    if (!el) return false;
+    const style = window.getComputedStyle(el);
+    if (!style || style.display === 'none' || style.visibility === 'hidden') return false;
+    const rect = el.getBoundingClientRect();
+    return rect.width > 2 && rect.height > 2;
+  };
+
+  for (const el of candidates) {
+    if (!isVisible(el)) continue;
+    const rect = el.getBoundingClientRect();
+    const x = rect.left + rect.width / 2;
+    const y = rect.top + rect.height / 2;
+    el.dispatchEvent(new MouseEvent('mousemove', { bubbles: true, cancelable: true, clientX: x, clientY: y }));
+    el.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, clientX: x, clientY: y, button: 0 }));
+    el.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true, clientX: x, clientY: y, button: 0 }));
+    el.click();
+    return true;
+  }
+
+  return false;
+}
+""");
+
+    return clicked;
+}
+
+static async Task<bool> DetectOutgoingCallMessageAsync(IPage page)
+{
+    var found = await page.EvaluateAsync<bool>("""
+() => {
+  const messages = Array.from(document.querySelectorAll('.bubble, .message'));
+  for (let i = messages.length - 1; i >= Math.max(0, messages.length - 40); i--) {
+    const raw = (messages[i]?.innerText || messages[i]?.textContent || '').toLowerCase();
+    if (raw.includes('outgoing call')) {
+      return true;
+    }
+  }
+
+  return false;
+}
+""");
+
+    return found;
 }
 
 static async Task<SaleDealReactionScan> CollectVo8rReactionScanAsync(IPage page, string dealId)
