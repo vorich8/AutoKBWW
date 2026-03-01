@@ -83,9 +83,16 @@ async Task RunInteractiveLoopAsync(IPage page)
             continue;
         }
 
+        if (string.Equals(input, "W", StringComparison.OrdinalIgnoreCase) || string.Equals(input, "WATCH", StringComparison.OrdinalIgnoreCase))
+        {
+            await RunSalesDealsWatcherAsync(page);
+            PrintCommandsHint();
+            continue;
+        }
+
         if (!int.TryParse(input, out var displayIndex))
         {
-            Console.WriteLine("Некорректный ввод. Укажите индекс, A, R, S или Q.");
+            Console.WriteLine("Некорректный ввод. Укажите индекс, A, W, R, S или Q.");
             PrintCommandsHint();
             continue;
         }
@@ -106,7 +113,130 @@ async Task RunInteractiveLoopAsync(IPage page)
 
 static void PrintCommandsHint()
 {
-    Console.WriteLine("Команды: индекс кнопки (0..), A - автосценарий P2P, R - перескан, S - стоп автоматики, Q - выход.");
+    Console.WriteLine("Команды: индекс кнопки (0..), A - автосценарий P2P, W - мониторинг новых сделок продажи, R - перескан, S - стоп автоматики, Q - выход.");
+}
+
+async Task RunSalesDealsWatcherAsync(IPage page)
+{
+    stopAllRequested = false;
+
+    var notificationUsers = ReadNotificationUsers();
+    Console.WriteLine($"Мониторинг продаж: уведомления будут отправляться: {string.Join(", ", notificationUsers)}");
+    Console.WriteLine("Запускаю мониторинг. Ищу новые сообщения вида '💡 Создана новая сделка ...'. Для остановки нажмите S.");
+
+    string? lastNotifiedDealId = null;
+
+    while (!stopAllRequested)
+    {
+        var latestMessage = await ExtractLatestMessageTextAsync(page);
+        if (TryParseCreatedSaleDeal(latestMessage, out var saleDeal))
+        {
+            if (!string.Equals(lastNotifiedDealId, saleDeal.DealId, StringComparison.OrdinalIgnoreCase))
+            {
+                Console.WriteLine($"Найдена новая сделка продажи: #{saleDeal.DealId}, {saleDeal.AmountRub} RUB, банк: {saleDeal.Bank}.");
+                await NotifyCreatedSaleDealAsync(page, notificationUsers, saleDeal);
+                if (stopAllRequested) return;
+
+                lastNotifiedDealId = saleDeal.DealId;
+            }
+        }
+
+        await WaitWithStopAsync(page, 1000);
+    }
+
+    Console.WriteLine("Мониторинг новых сделок продажи остановлен.");
+}
+
+static async Task<string> ExtractLatestMessageTextAsync(IPage page)
+{
+    var text = await page.EvaluateAsync<string>("""
+() => {
+  const blockText = (el) => (el?.innerText || el?.textContent || '').replace(/\r/g, '').trim();
+  const messages = Array.from(document.querySelectorAll('.bubble, .message'));
+  const last = messages.at(-1);
+  if (!last) return '';
+
+  return blockText(last.querySelector('.bubble-content-wrapper')) || blockText(last);
+}
+""");
+
+    return text ?? string.Empty;
+}
+
+static bool TryParseCreatedSaleDeal(string message, out SaleDealNotification deal)
+{
+    deal = default!;
+    if (string.IsNullOrWhiteSpace(message))
+    {
+        return false;
+    }
+
+    var match = Regex.Match(
+        message,
+        @"создана\s+новая\s+сделка\s*#(?<id>[a-z0-9]+).*?за\s*(?:🪙\s*)?(?<amount>[0-9\s.,]+)\s*rub.*?через\s*(?<bank>[^.\r\n]+)",
+        RegexOptions.IgnoreCase | RegexOptions.Singleline);
+
+    if (!match.Success)
+    {
+        return false;
+    }
+
+    var dealId = match.Groups["id"].Value.Trim();
+    var amount = Regex.Replace(match.Groups["amount"].Value, @"\s+", " ").Trim();
+    var bank = match.Groups["bank"].Value.Trim();
+
+    if (string.IsNullOrWhiteSpace(dealId) || string.IsNullOrWhiteSpace(amount) || string.IsNullOrWhiteSpace(bank))
+    {
+        return false;
+    }
+
+    deal = new SaleDealNotification
+    {
+        DealId = dealId,
+        AmountRub = amount,
+        Bank = bank
+    };
+
+    return true;
+}
+
+async Task NotifyCreatedSaleDealAsync(IPage page, IReadOnlyList<string> users, SaleDealNotification deal)
+{
+    var message = $"Создана новая сделка - #{deal.DealId} на {deal.AmountRub} RUB через {deal.Bank}";
+
+    foreach (var user in users)
+    {
+        await WaitWithStopAsync(page, 1000);
+        if (stopAllRequested) return;
+
+        var openedUser = await ClickChatByTitleAsync(page, user);
+        if (!openedUser)
+        {
+            Console.WriteLine($"Чат {user} не найден в закрепленных.");
+            continue;
+        }
+
+        await WaitWithStopAsync(page, 1000);
+        if (stopAllRequested) return;
+
+        var sent = await SendMessageToCurrentChatAsync(page, message);
+        if (!sent)
+        {
+            Console.WriteLine($"Не удалось отправить уведомление о новой сделке в {user}.");
+        }
+    }
+
+    await WaitWithStopAsync(page, 1000);
+    if (stopAllRequested) return;
+
+    var backToBot = await ClickChatByTitleAsync(page, "Crypto");
+    if (!backToBot)
+    {
+        Console.WriteLine("Не удалось вернуться в чат CryptoBot после уведомления о новой сделке.");
+        return;
+    }
+
+    await WaitWithStopAsync(page, 1000);
 }
 
 async Task RunP2PAutomationAsync(IPage page)
@@ -143,9 +273,11 @@ async Task RunP2PAutomationAsync(IPage page)
         await NotifyUsersWithTextAsync(page, notificationUsers, "Авто-P2P остановлена (команда S).");
     }
 
+    var automationStartedAt = DateTimeOffset.UtcNow;
+
     while (!stopAllRequested)
     {
-        var best = await FindBestOfferWithPagingAsync(page, targetPriceRub, volumeFilter, notificationUsers);
+        var best = await FindBestOfferWithPagingAsync(page, targetPriceRub, volumeFilter, notificationUsers, automationStartedAt);
         if (best is null)
         {
             if (stopAllRequested)
@@ -159,8 +291,8 @@ async Task RunP2PAutomationAsync(IPage page)
         }
 
         Console.WriteLine($"Выбираю лучшее объявление: [{best.DisplayIndex}] {best.SourceLabel}");
-        Console.WriteLine("Жду 0.5 сек перед нажатием лучшего объявления...");
-        await WaitWithStopAsync(page, 500);
+        Console.WriteLine("Жду 0.18 сек перед нажатием лучшего объявления...");
+        await WaitWithStopAsync(page, 180);
         if (stopAllRequested)
         {
             await StopWithNotifyAsync("Автоматизация остановлена клавишей S.");
@@ -174,7 +306,7 @@ async Task RunP2PAutomationAsync(IPage page)
             continue;
         }
 
-        var actionFlowCompleted = await ExecuteDealActionFlowAsync(page, best);
+        var actionFlowCompleted = await ExecuteDealActionFlowAsync(page, best, volumeFilter);
         if (stopAllRequested)
         {
             await StopWithNotifyAsync("Автоматизация остановлена клавишей S.");
@@ -194,7 +326,7 @@ async Task RunP2PAutomationAsync(IPage page)
             continue;
         }
 
-        Console.WriteLine("Жду 2 сек после создания сделки, чтобы сообщение успело появиться...");
+        Console.WriteLine("Жду 1 сек после создания сделки, чтобы сообщение успело появиться...");
         await WaitWithStopAsync(page, 1000);
         if (stopAllRequested)
         {
@@ -216,7 +348,7 @@ async Task RunP2PAutomationAsync(IPage page)
         var lower = dealInfo.MessageText?.ToLowerInvariant() ?? string.Empty;
         if (lower.Contains("продавец отказался от сделки"))
         {
-            await NotifyUsersWithTextAsync(page, notificationUsers, "Продавец отказался от сделки. Продолжаю искать новую.");
+            await NotifyRejectedDealToUsersAsync(page, notificationUsers, best, dealInfo);
             if (stopAllRequested) return;
 
             var restarted = await RestartP2PAfterRejectedDealAsync(page);
@@ -229,13 +361,21 @@ async Task RunP2PAutomationAsync(IPage page)
             continue;
         }
 
-        if (!lower.Contains("продавец принял сделку"))
+        var sellerAccepted = lower.Contains("продавец принял сделку");
+
+        if (!sellerAccepted)
         {
+            await NotifyPendingDealToUsersAsync(page, notificationUsers, best, dealInfo);
+            if (stopAllRequested) return;
+
             Console.WriteLine("Жду итог сделки: принятие, отказ или сообщение о проблеме цены/суммы...");
-            var outcome = await WaitForDealOutcomeAsync(page);
+            var outcome = await WaitForDealOutcomeAsync(page, dealInfo);
             if (outcome == DealOutcome.Rejected)
             {
-                await NotifyUsersWithTextAsync(page, notificationUsers, "Продавец отказался от сделки. Продолжаю искать новую.");
+                var rejectedInfo = await ExtractDealInfoWithRescansAsync(page, maxAttempts: 12);
+                PrintDealInfo(rejectedInfo);
+
+                await NotifyRejectedDealToUsersAsync(page, notificationUsers, best, rejectedInfo);
                 if (stopAllRequested) return;
 
                 var restarted = await RestartP2PAfterRejectedDealAsync(page);
@@ -267,40 +407,51 @@ async Task RunP2PAutomationAsync(IPage page)
                 continue;
             }
 
+            if (outcome == DealOutcome.Accepted)
+            {
+                sellerAccepted = true;
+            }
+
             dealInfo = await ExtractDealInfoWithRescansAsync(page, maxAttempts: 12);
             PrintDealInfo(dealInfo);
+            sellerAccepted = sellerAccepted || (dealInfo.MessageText ?? string.Empty)
+                .Contains("продавец принял сделку", StringComparison.OrdinalIgnoreCase);
         }
 
-        var acceptedByText = (dealInfo.MessageText ?? string.Empty)
-            .Contains("продавец принял сделку", StringComparison.OrdinalIgnoreCase);
-        if (acceptedByText)
+        if (sellerAccepted)
         {
-            dealInfo = await OpenAcceptedDealDetailsAsync(page);
+            var acceptedDetails = await OpenAcceptedDealDetailsAfterAcceptAsync(page);
+            if (acceptedDetails is null)
+            {
+                Console.WriteLine("Продавец принял сделку, но не удалось открыть детали через 'Посмотреть сделку'.");
+                await NotifyUsersWithTextAsync(page, notificationUsers, "ПРОДАВЕЦ ПРИНЯЛ СДЕЛКУ, но не удалось открыть карточку 'Посмотреть сделку'.");
+                return;
+            }
+
+            dealInfo = acceptedDetails;
             PrintDealInfo(dealInfo);
         }
 
-        await NotifyFoundDealToUsersAsync(page, notificationUsers, best, dealInfo);
+        await NotifyFoundDealToUsersAsync(page, notificationUsers, best, dealInfo, sellerAccepted);
         return;
     }
 }
 
-async Task<DealInfo> OpenAcceptedDealDetailsAsync(IPage page)
+async Task<DealInfo?> OpenAcceptedDealDetailsAfterAcceptAsync(IPage page)
 {
-    Console.WriteLine("Сделка принята. Пробую открыть карточку кнопкой 'Посмотреть сделку'...");
+    Console.WriteLine("Сделка принята. Нажимаю 'Посмотреть сделку', затем делаю новый рескан сообщения...");
 
-    await WaitWithStopAsync(page, 1000);
-    if (stopAllRequested) return new DealInfo { MessageText = string.Empty, ActionButtonLabel = "(остановлено)" };
+    await WaitWithStopAsync(page, 500);
+    if (stopAllRequested) return null;
 
-    var opened = await ClickVisibleButtonByTextAsync(page, "Посмотреть сделку", startsWith: true, preferExact: true);
+    var opened = await ClickAnyDealActionButtonWithRetryAsync(page, "Посмотреть сделку", "Посмотреть");
     if (!opened)
     {
-        Console.WriteLine("Кнопка 'Посмотреть сделку' не найдена. Собираю текущий текст сделки.");
-        return await ExtractDealInfoWithRescansAsync(page, maxAttempts: 24);
+        return null;
     }
 
-    Console.WriteLine("Нажата кнопка 'Посмотреть сделку'. Жду 1 сек и собираю полное сообщение сделки...");
-    await WaitWithStopAsync(page, 1000);
-    if (stopAllRequested) return new DealInfo { MessageText = string.Empty, ActionButtonLabel = "(остановлено)" };
+    await WaitWithStopAsync(page, 500);
+    if (stopAllRequested) return null;
 
     return await ExtractDealInfoWithRescansAsync(page, maxAttempts: 30);
 }
@@ -340,7 +491,7 @@ async Task<bool> NavigateToSbpMenuAsync(IPage page, bool includeP2p)
 
             if (!clicked)
             {
-                await WaitWithStopAsync(page, 700);
+                await WaitWithStopAsync(page, 250);
                 if (stopAllRequested) return false;
             }
         }
@@ -404,9 +555,15 @@ async Task NotifyUsersWithTextAsync(IPage page, IReadOnlyList<string> users, str
     await WaitWithStopAsync(page, 2000);
 }
 
-async Task<DealOutcome> WaitForDealOutcomeAsync(IPage page)
+async Task<DealOutcome> WaitForDealOutcomeAsync(IPage page, DealInfo initialDealInfo)
 {
     var checkCounter = 0;
+    var startedAt = DateTimeOffset.UtcNow;
+    var dealId = ExtractDealId(initialDealInfo.MessageText);
+    if (!string.IsNullOrWhiteSpace(dealId))
+    {
+        Console.WriteLine($"Ожидаю исход по сделке #{dealId}.");
+    }
 
     while (true)
     {
@@ -415,16 +572,21 @@ async Task<DealOutcome> WaitForDealOutcomeAsync(IPage page)
             return DealOutcome.Stopped;
         }
 
-        var fastSignal = await DetectDealOutcomeSignalAsync(page);
+        var fastSignal = await DetectDealOutcomeSignalAsync(page, dealId);
         if (fastSignal != DealOutcome.Unknown)
         {
             return fastSignal;
         }
 
         var dealInfo = await ExtractDealInfoAsync(page);
+        if (string.IsNullOrWhiteSpace(dealId))
+        {
+            dealId = ExtractDealId(dealInfo.MessageText);
+        }
+
         var lower = dealInfo.MessageText?.ToLowerInvariant() ?? string.Empty;
         if (lower.Contains("продавец принял сделку")) return DealOutcome.Accepted;
-        if (lower.Contains("продавец отказался от сделки")) return DealOutcome.Rejected;
+        if (lower.Contains("продавец отказался от сделки") && !string.IsNullOrWhiteSpace(dealId)) return DealOutcome.Rejected;
         if (HasDealCreationProblem(lower)) return DealOutcome.NeedRestart;
 
         checkCounter++;
@@ -433,27 +595,34 @@ async Task<DealOutcome> WaitForDealOutcomeAsync(IPage page)
             Console.WriteLine("Итог сделки ещё не пришёл. Продолжаю ждать подтверждение/отказ...");
         }
 
-        await WaitWithStopAsync(page, 700);
+        if (DateTimeOffset.UtcNow - startedAt > TimeSpan.FromMinutes(11))
+        {
+            Console.WriteLine("Истекло время ожидания итога сделки (11 минут). Перезапускаю поиск.");
+            return DealOutcome.NeedRestart;
+        }
+
+        await WaitWithStopAsync(page, 250);
     }
 }
 
-async Task<DealOutcome> DetectDealOutcomeSignalAsync(IPage page)
+async Task<DealOutcome> DetectDealOutcomeSignalAsync(IPage page, string? dealId)
 {
     var signal = await page.EvaluateAsync<string>("""
-() => {
+(args) => {
   const text = (el) => (el?.innerText || el?.textContent || '').replace(/\s+/g, ' ').trim().toLowerCase();
+  const wantedDealId = (args?.dealId || '').toString().trim().toLowerCase();
 
-  const actionButtons = Array.from(document.querySelectorAll('button, [role="button"], .reply-markup-button, .Button'));
-  if (actionButtons.some((b) => text(b).startsWith('посмотреть сделку'))) {
-    return 'accepted';
-  }
-
-  const messages = Array.from(document.querySelectorAll('.bubble, .message')).slice(-15);
+  const messages = Array.from(document.querySelectorAll('.bubble, .message')).slice(-60);
   for (let i = messages.length - 1; i >= 0; i--) {
     const t = text(messages[i]);
     if (!t) continue;
-    if (t.includes('продавец принял сделку')) return 'accepted';
-    if (t.includes('продавец отказался от сделки')) return 'rejected';
+
+    const fitsDeal = wantedDealId.length === 0 ? true : t.includes(`#${wantedDealId}`) || t.includes(`сделк` ) && t.includes(wantedDealId);
+
+    if (t.includes('продавец принял сделку') && fitsDeal) return 'accepted';
+
+    if (wantedDealId.length > 0 && t.includes('продавец отказался от сделки') && fitsDeal) return 'rejected';
+
     if (t.includes('цена объявления изменилась') || t.includes('пришлите сумму сделки') || t.includes('попробуйте повторить попытку быстрее') || t.includes('в пределах от')) {
       return 'needrestart';
     }
@@ -461,7 +630,7 @@ async Task<DealOutcome> DetectDealOutcomeSignalAsync(IPage page)
 
   return 'unknown';
 }
-""");
+""", new { dealId = dealId ?? string.Empty });
 
     return signal switch
     {
@@ -470,6 +639,22 @@ async Task<DealOutcome> DetectDealOutcomeSignalAsync(IPage page)
         "needrestart" => DealOutcome.NeedRestart,
         _ => DealOutcome.Unknown
     };
+}
+
+static string? ExtractDealId(string? message)
+{
+    if (string.IsNullOrWhiteSpace(message))
+    {
+        return null;
+    }
+
+    var match = Regex.Match(message, @"сделка\s*#\s*([a-z0-9]+)", RegexOptions.IgnoreCase);
+    if (!match.Success || match.Groups.Count < 2)
+    {
+        return null;
+    }
+
+    return match.Groups[1].Value.Trim();
 }
 
 bool HasDealCreationProblem(string lowerMessage)
@@ -482,7 +667,7 @@ bool HasDealCreationProblem(string lowerMessage)
            || lowerMessage.Contains("в пределах от");
 }
 
-async Task<bool> ExecuteDealActionFlowAsync(IPage page, P2POffer best)
+async Task<bool> ExecuteDealActionFlowAsync(IPage page, P2POffer best, VolumeFilter volumeFilter)
 {
     if (best is null)
     {
@@ -493,64 +678,246 @@ async Task<bool> ExecuteDealActionFlowAsync(IPage page, P2POffer best)
     Console.WriteLine($"Готовлю действия по сделке для объявления: [{best.DisplayIndex}] {best.SourceLabel}");
     await LogVisibleButtonsAsync(page, "Кнопки после открытия объявления");
 
-    Console.WriteLine("Жду 0.7 сек перед нажатием 'Купить'...");
-    await WaitWithStopAsync(page, 700);
+    Console.WriteLine("Жду 0.25 сек перед нажатием 'Купить'...");
+    await WaitWithStopAsync(page, 250);
     if (stopAllRequested) return false;
 
-    var buyClicked = await ClickAnyDealActionButtonWithRetryAsync(page, "Купить", "Купить USDT");
+    var buyClicked = await ClickBuyButtonWithRetryAsync(page);
     if (!buyClicked)
     {
         Console.WriteLine("Кнопка 'Купить' не найдена на экране сделки.");
         return false;
     }
 
-    Console.WriteLine("Жду 0.7 сек перед проверкой кнопки 'Макс.'...");
-    await WaitWithStopAsync(page, 700);
-    if (stopAllRequested) return false;
-
-    var maxClicked = await ClickAnyDealActionButtonWithRetryAsync(page, "Макс.", "Макс");
-    if (maxClicked)
+    var enteredDealActions = await EnsureDealActionsOpenedAsync(page);
+    if (!enteredDealActions)
     {
-        Console.WriteLine("Нажата 'Макс.'. Жду 0.7 сек перед нажатием 'Создать сделку'...");
-        await WaitWithStopAsync(page, 700);
+        Console.WriteLine("Не удалось перейти к шагу выбора суммы/создания сделки после нажатия 'Купить'.");
+        await LogVisibleButtonsAsync(page, "Кнопки после попытки перехода к шагу сделки");
+        return false;
+    }
+
+    var actionButtons = await DetectDealActionButtonsStateAsync(page);
+    Console.WriteLine($"Проверка кнопок сделки: Купить={actionButtons.HasBuy}, Макс={actionButtons.HasMax}, Создать={actionButtons.HasCreate}, УказатьRUB={actionButtons.HasSpecifyRub}.");
+
+    if (ShouldUseSpecifyRubFlow(best, volumeFilter, actionButtons))
+    {
+        Console.WriteLine($"Подходящий объём ограничен максимумом {volumeFilter.MaxRub.ToString(CultureInfo.InvariantCulture)} RUB. Использую ветку 'Указать в RUB'.");
+        return await ExecuteSpecifyRubAmountFlowAsync(page, volumeFilter.MaxRub);
+    }
+
+    if (actionButtons.HasMax)
+    {
+        Console.WriteLine("Найдена кнопка 'Макс'. Нажимаю её перед созданием сделки...");
+        var maxClicked = await ClickAnyDealActionButtonWithRetryAsync(page, "Макс");
+        if (!maxClicked)
+        {
+            Console.WriteLine("Кнопка 'Макс' была обнаружена, но нажать её не удалось.");
+            return false;
+        }
+
+        Console.WriteLine("Нажата 'Макс'. Делаю повторный рескан кнопок после обновления суммы...");
+        await WaitWithStopAsync(page, 250);
         if (stopAllRequested) return false;
 
-        var createAfterMaxClicked = await ClickAnyDealActionButtonWithRetryAsync(page, "Создать сделку", "Создать");
-        if (!createAfterMaxClicked)
+        var afterMaxState = await DetectDealActionButtonsStateAsync(page);
+        Console.WriteLine($"После 'Макс': Купить={afterMaxState.HasBuy}, Макс={afterMaxState.HasMax}, Создать={afterMaxState.HasCreate}, УказатьRUB={afterMaxState.HasSpecifyRub}.");
+
+        if (!afterMaxState.HasCreate && !afterMaxState.HasSpecifyRub)
         {
-            Console.WriteLine("Кнопка 'Создать сделку' не найдена после нажатия 'Макс.'.");
+            await WaitWithStopAsync(page, 250);
+            if (stopAllRequested) return false;
+
+            afterMaxState = await DetectDealActionButtonsStateAsync(page);
+            Console.WriteLine($"Повторный рескан после 'Макс': Купить={afterMaxState.HasBuy}, Макс={afterMaxState.HasMax}, Создать={afterMaxState.HasCreate}, УказатьRUB={afterMaxState.HasSpecifyRub}.");
+        }
+
+        if (afterMaxState.HasCreate)
+        {
+            var createAfterMaxClicked = await ClickAnyDealActionButtonWithRetryAsync(page, "Созд");
+            if (!createAfterMaxClicked)
+            {
+                Console.WriteLine("Кнопка 'Создать сделку' не найдена после нажатия 'Макс'.");
+                return false;
+            }
+
+            return true;
+        }
+
+        if (afterMaxState.HasSpecifyRub)
+        {
+            Console.WriteLine("После 'Макс' доступна ветка 'Указать в RUB'. Перехожу к ней.");
+            return await ExecuteSpecifyRubAmountFlowAsync(page, volumeFilter.MaxRub);
+        }
+
+        Console.WriteLine("После 'Макс' не нашел ни 'Создать', ни 'Указать в RUB'.");
+        await LogVisibleButtonsAsync(page, "Кнопки после нажатия 'Макс'");
+        return false;
+    }
+
+    if (actionButtons.HasCreate)
+    {
+        Console.WriteLine("Кнопки 'Макс' нет, но есть 'Создать сделку' (единый объем). Нажимаю сразу 'Создать сделку'...");
+        await WaitWithStopAsync(page, 250);
+        if (stopAllRequested) return false;
+
+        var createDealClicked = await ClickAnyDealActionButtonWithRetryAsync(page, "Созд");
+        if (!createDealClicked)
+        {
+            Console.WriteLine("Кнопка 'Создать сделку' была на экране, но нажать её не удалось.");
             return false;
         }
 
         return true;
     }
 
-    Console.WriteLine("Кнопка 'Макс.' не найдена. Пробую сразу нажать 'Создать сделку'...");
-    Console.WriteLine("Жду 0.7 сек перед нажатием 'Создать сделку'...");
-    await WaitWithStopAsync(page, 700);
+    Console.WriteLine("Не найдены ни 'Макс', ни 'Создать сделку'. Снимаю debug-список кнопок и прерываю шаг сделки.");
+    await LogVisibleButtonsAsync(page, "Кнопки в карточке сделки (ожидались 'Макс' или 'Создать сделку')");
+    return false;
+}
+
+bool ShouldUseSpecifyRubFlow(P2POffer offer, VolumeFilter volumeFilter, DealActionButtonsState state)
+{
+    if (volumeFilter.MinRub is not null)
+    {
+        return false;
+    }
+
+    if (!state.HasSpecifyRub)
+    {
+        return false;
+    }
+
+    if (offer.VolumeMax is null)
+    {
+        return false;
+    }
+
+    return offer.VolumeMax.Value > volumeFilter.MaxRub + 0.01;
+}
+
+async Task<bool> ExecuteSpecifyRubAmountFlowAsync(IPage page, double targetRub)
+{
+    var specifyClicked = await ClickAnyDealActionButtonWithRetryAsync(page, "Указ");
+    if (!specifyClicked)
+    {
+        Console.WriteLine("Кнопка 'Указать в RUB' не найдена.");
+        return false;
+    }
+
+    await WaitWithStopAsync(page, 250);
     if (stopAllRequested) return false;
 
-    var createDealClicked = await ClickAnyDealActionButtonWithRetryAsync(page, "Создать сделку", "Создать");
-    if (!createDealClicked)
+    var amountText = ((int)Math.Round(targetRub, MidpointRounding.AwayFromZero)).ToString(CultureInfo.InvariantCulture);
+    Console.WriteLine($"Отправляю сумму сделки в RUB: {amountText}");
+
+    var amountSent = await SendMessageToCurrentChatAsync(page, amountText);
+    if (!amountSent)
     {
-        Console.WriteLine("Кнопка 'Создать сделку' не найдена.");
+        Console.WriteLine("Не удалось отправить сумму в RUB.");
+        return false;
+    }
+
+    await WaitWithStopAsync(page, 250);
+    if (stopAllRequested) return false;
+
+    var createClicked = await ClickAnyDealActionButtonWithRetryAsync(page, "Созд");
+    if (!createClicked)
+    {
+        Console.WriteLine("Кнопка 'Создать сделку' не найдена после указания RUB.");
         return false;
     }
 
     return true;
 }
 
+async Task<bool> ClickBuyButtonWithRetryAsync(IPage page)
+{
+    var byCommonText = await ClickAnyDealActionButtonWithRetryAsync(page, "Купить");
+    if (byCommonText)
+    {
+        return true;
+    }
+
+    Console.WriteLine("Стандартный поиск кнопки 'Купить' не сработал. Пробую прямой клик по видимой кнопке с текстом 'Купить...'.");
+    var directClicked = await ClickVisibleButtonByTextAsync(page, "Купить", startsWith: true);
+    if (directClicked)
+    {
+        Console.WriteLine("Успешно нажал 'Купить' через прямой поиск кнопки.");
+        return true;
+    }
+
+    return false;
+}
+
+async Task<bool> EnsureDealActionsOpenedAsync(IPage page)
+{
+    for (var attempt = 1; attempt <= 2; attempt++)
+    {
+        if (stopAllRequested) return false;
+
+        Console.WriteLine($"Жду 0.25 сек перед проверкой перехода к шагу сделки (попытка {attempt}/2)...");
+        await WaitWithStopAsync(page, 250);
+        if (stopAllRequested) return false;
+
+        var state = await DetectDealActionButtonsStateAsync(page);
+        Console.WriteLine($"Состояние после 'Купить': Купить={state.HasBuy}, Макс={state.HasMax}, Создать={state.HasCreate}.");
+
+        if (state.HasMax || state.HasCreate)
+        {
+            return true;
+        }
+
+        if (!state.HasBuy)
+        {
+            continue;
+        }
+
+        Console.WriteLine("Похоже, карточка сделки не открылась (кнопка 'Купить' всё ещё на месте). Пробую нажать 'Купить' повторно...");
+        var buyClicked = await ClickBuyButtonWithRetryAsync(page);
+        if (!buyClicked)
+        {
+            Console.WriteLine("Повторно нажать 'Купить' не удалось.");
+        }
+    }
+
+    return false;
+}
+
+async Task<DealActionButtonsState> DetectDealActionButtonsStateAsync(IPage page)
+{
+    var buttons = await CollectVisibleButtonsWithTimeoutAsync(page, timeoutMs: 1200);
+    var labels = buttons
+        .Select(x => x.Label)
+        .Where(x => !string.IsNullOrWhiteSpace(x))
+        .Select(x => x.Trim())
+        .ToList();
+
+    var hasBuy = labels.Any(label => label.Contains("куп", StringComparison.OrdinalIgnoreCase));
+    var hasMax = labels.Any(label => label.Contains("макс", StringComparison.OrdinalIgnoreCase));
+    var hasCreate = labels.Any(label => label.Contains("созд", StringComparison.OrdinalIgnoreCase));
+    var hasSpecifyRub = labels.Any(label => label.Contains("rub", StringComparison.OrdinalIgnoreCase)
+                                            && (label.Contains("указ", StringComparison.OrdinalIgnoreCase)
+                                                || label.Contains("ввест", StringComparison.OrdinalIgnoreCase)));
+
+    return new DealActionButtonsState { HasBuy = hasBuy, HasMax = hasMax, HasCreate = hasCreate, HasSpecifyRub = hasSpecifyRub };
+}
+
 async Task<bool> ClickDealActionButtonWithRetryAsync(IPage page, string buttonText)
 {
-    for (var attempt = 1; attempt <= 5; attempt++)
+    for (var attempt = 1; attempt <= 2; attempt++)
     {
         if (stopAllRequested)
         {
             return false;
         }
 
-        Console.WriteLine($"Пытаюсь нажать кнопку '{buttonText}' (попытка {attempt}/5)...");
-        var clicked = await ClickVisibleButtonByTextAsync(page, buttonText, startsWith: true, preferExact: true);
+        Console.WriteLine($"Пытаюсь нажать кнопку '{buttonText}' (попытка {attempt}/2)...");
+        var clicked = await ClickVisibleButtonByTextAsync(page, buttonText, startsWith: true, preferExact: false);
+        if (!clicked)
+        {
+            clicked = await ClickVisibleButtonByTextAsync(page, buttonText, startsWith: false, containsOnly: true);
+        }
         if (clicked)
         {
             Console.WriteLine($"Успешно нажал '{buttonText}' на попытке {attempt}.");
@@ -559,10 +926,10 @@ async Task<bool> ClickDealActionButtonWithRetryAsync(IPage page, string buttonTe
 
         Console.WriteLine($"Кнопка '{buttonText}' не найдена на попытке {attempt}. Снимаю список видимых кнопок...");
         await LogVisibleButtonsAsync(page, $"Видимые кнопки (поиск '{buttonText}', попытка {attempt})");
-        await WaitWithStopAsync(page, 350);
+        await WaitWithStopAsync(page, 150);
     }
 
-    Console.WriteLine($"Не удалось нажать '{buttonText}' после 5 попыток.");
+    Console.WriteLine($"Не удалось нажать '{buttonText}' после 2 попыток.");
     return false;
 }
 
@@ -608,10 +975,10 @@ async Task<List<ButtonDebugInfo>> CollectVisibleButtonsWithTimeoutAsync(IPage pa
 
 static async Task<List<ButtonDebugInfo>> CollectVisibleButtonsAsync(IPage page)
 {
-    var buttons = await page.EvaluateAsync<List<string>>("""
+    var buttonsJson = await page.EvaluateAsync<string>("""
 () => {
   const text = (el) => (el?.textContent || '').replace(/\s+/g, ' ').trim();
-  return Array.from(document.querySelectorAll('button, [role="button"], .reply-markup-button, .Button'))
+  const items = Array.from(document.querySelectorAll('button, [role="button"], .reply-markup-button, .Button'))
     .filter((btn) => {
       const rect = btn.getBoundingClientRect();
       const style = getComputedStyle(btn);
@@ -620,12 +987,14 @@ static async Task<List<ButtonDebugInfo>> CollectVisibleButtonsAsync(IPage page)
     .map((btn) => text(btn))
     .filter((t) => typeof t === 'string' && t.length > 0)
     .slice(-40);
+
+  return JSON.stringify(items);
 }
 """);
 
-    return (buttons ?? new List<string>())
+    return ParseStringArrayJson(buttonsJson)
         .Where(label => !string.IsNullOrWhiteSpace(label))
-        .Select(label => new ButtonDebugInfo { Label = label! })
+        .Select(label => new ButtonDebugInfo { Label = label })
         .ToList();
 }
 
@@ -640,7 +1009,7 @@ async Task<bool> ClickAnyDealActionButtonWithRetryAsync(IPage page, params strin
     return false;
 }
 
-async Task<P2POffer?> FindBestOfferWithPagingAsync(IPage page, double targetPriceRub, VolumeFilter volumeFilter, IReadOnlyList<string> notificationUsers)
+async Task<P2POffer?> FindBestOfferWithPagingAsync(IPage page, double targetPriceRub, VolumeFilter volumeFilter, IReadOnlyList<string> notificationUsers, DateTimeOffset startedAt)
 {
     var attempt = 0;
     var lastNoDealNotifyAt = DateTimeOffset.UtcNow;
@@ -677,7 +1046,7 @@ async Task<P2POffer?> FindBestOfferWithPagingAsync(IPage page, double targetPric
 
         if (DateTimeOffset.UtcNow - lastNoDealNotifyAt >= TimeSpan.FromMinutes(5))
         {
-            await SendNoDealsNotificationAsync(page, notificationUsers);
+            await SendNoDealsNotificationAsync(page, notificationUsers, startedAt);
             if (stopAllRequested)
             {
                 Console.WriteLine("Поиск остановлен клавишей S.");
@@ -711,7 +1080,7 @@ async Task<P2POffer?> FindBestOfferWithPagingAsync(IPage page, double targetPric
     }
 }
 
-async Task SendNoDealsNotificationAsync(IPage page, IReadOnlyList<string> users)
+async Task SendNoDealsNotificationAsync(IPage page, IReadOnlyList<string> users, DateTimeOffset startedAt)
 {
     Console.WriteLine($"5 минут без сделок. Отправляю уведомление пользователям: {string.Join(", ", users)}...");
 
@@ -730,7 +1099,7 @@ async Task SendNoDealsNotificationAsync(IPage page, IReadOnlyList<string> users)
         await WaitWithStopAsync(page, 2000);
         if (stopAllRequested) return;
 
-        var sent = await SendMessageToCurrentChatAsync(page, "Пока сделок нет. Продолжаю поиски..");
+        var sent = await SendMessageToCurrentChatAsync(page, $"Пока сделок нет. Продолжаю поиски. Ищу уже {FormatElapsedSince(startedAt)}.");
         if (!sent)
         {
             Console.WriteLine($"Не удалось отправить уведомление в {user}.");
@@ -750,11 +1119,81 @@ async Task SendNoDealsNotificationAsync(IPage page, IReadOnlyList<string> users)
     await WaitWithStopAsync(page, 2000);
 }
 
-async Task NotifyFoundDealToUsersAsync(IPage page, IReadOnlyList<string> users, P2POffer best, DealInfo dealInfo)
+static string FormatElapsedSince(DateTimeOffset startedAt)
+{
+    var elapsed = DateTimeOffset.UtcNow - startedAt;
+    if (elapsed < TimeSpan.Zero) elapsed = TimeSpan.Zero;
+
+    if (elapsed.TotalHours >= 1)
+    {
+        return $"{(int)elapsed.TotalHours}ч {elapsed.Minutes}м";
+    }
+
+    return $"{elapsed.Minutes}м {elapsed.Seconds}с";
+}
+
+async Task NotifyPendingDealToUsersAsync(IPage page, IReadOnlyList<string> users, P2POffer best, DealInfo dealInfo)
+{
+    var announcement = TryBuildFullDealNotificationText(best, dealInfo)
+        ?? $"Найдено подходящее объявление: [{best.DisplayIndex}] {best.SourceLabel}";
+
+    await NotifyUsersWithTextAsync(page, users, announcement);
+    if (stopAllRequested) return;
+
+    await NotifyUsersWithTextAsync(page, users, "Жду решения продавца: подтверждение или отказ.");
+}
+
+async Task NotifyRejectedDealToUsersAsync(IPage page, IReadOnlyList<string> users, P2POffer best, DealInfo dealInfo)
+{
+    Console.WriteLine($"Отправляю уведомление об отмененной сделке пользователям: {string.Join(", ", users)}...");
+
+    var message = "Продавец отказался от сделки.";
+
+    foreach (var user in users)
+    {
+        await WaitWithStopAsync(page, 2000);
+        if (stopAllRequested) return;
+
+        var openedUser = await ClickChatByTitleAsync(page, user);
+        if (!openedUser)
+        {
+            Console.WriteLine($"Чат {user} не найден в закрепленных.");
+            continue;
+        }
+
+        await WaitWithStopAsync(page, 2000);
+        if (stopAllRequested) return;
+
+        Console.WriteLine($"Отправляю уведомление об отмене сделки в {user}...");
+        var sent = await SendMessageToCurrentChatAsync(page, message);
+        if (!sent)
+        {
+            Console.WriteLine($"Не удалось отправить сообщение об отмене сделки в {user}.");
+        }
+    }
+
+    await WaitWithStopAsync(page, 2000);
+    if (stopAllRequested) return;
+
+    var backToBot = await ClickChatByTitleAsync(page, "Crypto");
+    if (!backToBot)
+    {
+        Console.WriteLine("Не удалось вернуться в чат CryptoBot после уведомления об отмене сделки.");
+        return;
+    }
+
+    await WaitWithStopAsync(page, 2000);
+}
+
+async Task NotifyFoundDealToUsersAsync(IPage page, IReadOnlyList<string> users, P2POffer best, DealInfo dealInfo, bool sellerAccepted)
 {
     Console.WriteLine($"Отправляю найденное объявление пользователям: {string.Join(", ", users)}...");
 
     var fullDealText = TryBuildFullDealNotificationText(best, dealInfo);
+    if (sellerAccepted && !string.IsNullOrWhiteSpace(fullDealText))
+    {
+        fullDealText = "ПРОДАВЕЦ ПРИНЯЛ СДЕЛКУ.\n\n" + fullDealText;
+    }
     if (fullDealText is null)
     {
         Console.WriteLine("Полный текст сделки не собран. Уведомление НЕ отправлено, чтобы не слать неполные данные.");
@@ -800,7 +1239,7 @@ async Task NotifyFoundDealToUsersAsync(IPage page, IReadOnlyList<string> users, 
 
 IReadOnlyList<string> ReadNotificationUsers()
 {
-    Console.Write("Введите ники получателей уведомлений через запятую (Enter = VO8R, gg): ");
+    Console.Write("Введите ники получателей уведомлений через запятую (Enter = VO8R): ");
     var input = Console.ReadLine();
     var users = (input ?? string.Empty)
         .Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries)
@@ -809,7 +1248,7 @@ IReadOnlyList<string> ReadNotificationUsers()
 
     if (users.Count == 0)
     {
-        users = ["VO8R", "gg"];
+        users = ["VO8R"];
     }
 
     return users;
@@ -841,6 +1280,16 @@ async Task<double> ReadTargetPriceRubAsync(
     Func<(double? Price, DateTimeOffset At)> getCached,
     Action<(double Price, DateTimeOffset At)> setCached)
 {
+    var marketPreview = await TryGetMarketPricePreviewAsync(getCached, setCached);
+    if (marketPreview is null)
+    {
+        Console.WriteLine("Текущую рыночную цену USDT/RUB определить не удалось.");
+    }
+    else
+    {
+        Console.WriteLine($"Текущая рыночная цена USDT/RUB: {marketPreview.Value.ToString(CultureInfo.InvariantCulture)}");
+    }
+
     while (true)
     {
         Console.Write("Режим цены: 1 - рыночная, 2 - своя цена: ");
@@ -979,6 +1428,26 @@ async Task WaitWithStopAsync(IPage page, int totalMs)
         await page.WaitForTimeoutAsync(step);
         remaining -= step;
     }
+}
+
+static async Task<double?> TryGetMarketPricePreviewAsync(
+    Func<(double? Price, DateTimeOffset At)> getCached,
+    Action<(double Price, DateTimeOffset At)> setCached)
+{
+    var cached = getCached();
+    if (cached.Price is not null && DateTimeOffset.UtcNow - cached.At < TimeSpan.FromMinutes(10))
+    {
+        return cached.Price.Value;
+    }
+
+    var market = await TryGetMarketPriceRubAsync();
+    if (market is null)
+    {
+        return null;
+    }
+
+    setCached((market.Value, DateTimeOffset.UtcNow));
+    return market.Value;
 }
 
 static async Task<double> ResolveMarketPriceAsync(
@@ -1205,7 +1674,7 @@ static int ScoreDealMessage(string message)
 
 static async Task<DealInfo> ExtractDealInfoAsync(IPage page)
 {
-    var data = await page.EvaluateAsync<DealInfo?>("""
+    var data = await page.EvaluateAsync<string>("""
 () => {
   const text = (el) => (el?.textContent || '').replace(/\s+/g, ' ').trim();
   const blockText = (el) => (el?.innerText || el?.textContent || '').replace(/\r/g, '').trim();
@@ -1234,14 +1703,19 @@ static async Task<DealInfo> ExtractDealInfoAsync(IPage page)
   const buyButton = Array.from(document.querySelectorAll('button, [role="button"], .reply-markup-button, .Button'))
     .find((btn) => text(btn).toLowerCase().startsWith('купить'));
 
-  return {
+  return JSON.stringify({
     MessageText: dealMessage,
     ActionButtonLabel: buyButton ? text(buyButton) : '(кнопка Купить* не найдена)'
-  };
+  });
 }
 """);
 
-    return data ?? new DealInfo { MessageText = string.Empty, ActionButtonLabel = "(не удалось извлечь)" };
+    if (TryReadDealInfo(data, out var info))
+    {
+        return info;
+    }
+
+    return new DealInfo { MessageText = string.Empty, ActionButtonLabel = "(не удалось извлечь)" };
 }
 
 static string? TryBuildFullDealNotificationText(P2POffer best, DealInfo dealInfo)
@@ -1324,7 +1798,7 @@ static (double? Min, double? Max) TryParseVolumeRange(string rawVolume)
 
 static async Task<bool> ClickChatByTitleAsync(IPage page, string titlePart)
 {
-    var target = await page.EvaluateAsync<ClickTarget?>("""
+    var targetData = await page.EvaluateAsync<string>("""
 (titlePart) => {
   const normalize = (s) => (s || '').replace(/\s+/g, ' ').trim().toLowerCase();
   const wanted = normalize(titlePart);
@@ -1335,11 +1809,11 @@ static async Task<bool> ClickChatByTitleAsync(IPage page, string titlePart)
   if (!hit) return null;
 
   const rect = hit.getBoundingClientRect();
-  return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2, label: text(hit) };
+  return JSON.stringify({ x: rect.left + rect.width / 2, y: rect.top + rect.height / 2, label: text(hit) });
 }
 """, titlePart);
 
-    if (target is null) return false;
+    if (!TryReadClickTarget(targetData, out var target)) return false;
 
     await page.Mouse.MoveAsync((float)target.X, (float)target.Y);
     await page.Mouse.DownAsync();
@@ -1370,28 +1844,44 @@ static async Task<bool> SendMessageToCurrentChatAsync(IPage page, string message
 
 static async Task<bool> ClickVisibleButtonByTextAsync(IPage page, string expectedText, bool startsWith, bool containsOnly = false, bool preferExact = false)
 {
-    var target = await page.EvaluateAsync<ClickTarget?>("""
+    var targetData = await page.EvaluateAsync<string>("""
 (args) => {
   const normalize = (s) => (s || '').replace(/\s+/g, ' ').trim().toLowerCase();
   const loose = (s) => normalize(s).replace(/[^\p{L}\p{N}]+/gu, '');
   const text = (el) => (el?.textContent || '').replace(/\s+/g, ' ').trim();
 
   const allVisibleButtons = Array.from(document.querySelectorAll('button, [role="button"], .reply-markup-button, .Button'))
-    .filter((btn) => {
-      const rect = btn.getBoundingClientRect();
+    .map((btn) => ({ btn, rect: btn.getBoundingClientRect() }))
+    .filter(({ btn, rect }) => {
       const style = getComputedStyle(btn);
       return rect.width > 0 && rect.height > 0 && style.visibility !== 'hidden' && style.display !== 'none';
     });
 
+  const bubbles = Array.from(document.querySelectorAll('.bubble, .message'));
+  const lastBubble = bubbles.at(-1) || null;
+  const anchorTop = lastBubble ? lastBubble.getBoundingClientRect().top : -100000;
+
+  const aroundLatestMessage = allVisibleButtons.filter((x) => x.rect.top >= anchorTop - 40);
+  const scopedButtons = (aroundLatestMessage.length > 0 ? aroundLatestMessage : allVisibleButtons).map((x) => x.btn);
+
   const expected = normalize(args.expectedText);
   const expectedLoose = loose(args.expectedText);
-  const matches = allVisibleButtons.filter((btn) => {
+  const expectedTokens = expected.split(/\s+/).filter(Boolean);
+  const tokenMatch = (t) => expectedTokens.length > 0 && expectedTokens.every((token) => t.includes(token));
+
+  const matches = scopedButtons.filter((btn) => {
     const t = normalize(text(btn));
     const tLoose = loose(text(btn));
     if (args.preferExact && t === expected) return true;
-    if (args.containsOnly) return t.includes(expected);
-    if (args.startsWith) return t.startsWith(expected) || (expectedLoose.length > 0 && tLoose.startsWith(expectedLoose));
-    return t.includes(expected) || (expectedLoose.length > 0 && tLoose.includes(expectedLoose));
+    if (args.containsOnly) return t.includes(expected) || tokenMatch(t);
+    if (args.startsWith)
+      return t.startsWith(expected)
+        || (expectedLoose.length > 0 && tLoose.startsWith(expectedLoose))
+        || tokenMatch(t);
+
+    return t.includes(expected)
+      || (expectedLoose.length > 0 && tLoose.includes(expectedLoose))
+      || tokenMatch(t);
   });
 
   if (!matches.length) return null;
@@ -1411,11 +1901,11 @@ static async Task<bool> ClickVisibleButtonByTextAsync(IPage page, string expecte
 
   const hit = scored[0].btn;
   const rect = hit.getBoundingClientRect();
-  return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2, label: text(hit) };
+  return JSON.stringify({ x: rect.left + rect.width / 2, y: rect.top + rect.height / 2, label: text(hit) });
 }
 """, new { expectedText, startsWith, containsOnly, preferExact });
 
-    if (target is null) return false;
+    if (!TryReadClickTarget(targetData, out var target)) return false;
 
     await page.Mouse.MoveAsync((float)target.X, (float)target.Y);
     await page.Mouse.DownAsync();
@@ -1425,36 +1915,40 @@ static async Task<bool> ClickVisibleButtonByTextAsync(IPage page, string expecte
 
 static async Task<bool> ClickVisibleButtonByIndexAsync(IPage page, int displayIndex, bool isAutomation = false)
 {
-    var target = await page.EvaluateAsync<ClickTarget?>("""
+    var targetData = await page.EvaluateAsync<string>("""
 (displayIndex) => {
   const text = (el) => (el?.textContent || '').replace(/\s+/g, ' ').trim();
   const allVisibleButtons = Array.from(document.querySelectorAll('button, [role="button"], .reply-markup-button, .Button'))
-    .map((btn) => ({ btn }))
-    .filter(({ btn }) => {
-      const rect = btn.getBoundingClientRect();
+    .map((btn) => ({ btn, rect: btn.getBoundingClientRect() }))
+    .filter(({ btn, rect }) => {
       const style = getComputedStyle(btn);
       const visible = rect.width > 0 && rect.height > 0 && style.visibility !== 'hidden' && style.display !== 'none';
       if (!visible) return false;
       const t = text(btn);
       return t.length > 0 || (btn.getAttribute('aria-label') || '').trim().length > 0;
-    })
-    .sort((a, b) => {
-      const ar = a.btn.getBoundingClientRect();
-      const br = b.btn.getBoundingClientRect();
-      if (Math.abs(ar.top - br.top) > 6) return ar.top - br.top;
-      return ar.left - br.left;
     });
 
-  const last30 = allVisibleButtons.slice(-30);
-  const chosen = last30[displayIndex];
+  const bubbles = Array.from(document.querySelectorAll('.bubble, .message'));
+  const lastBubble = bubbles.at(-1) || null;
+  const anchorTop = lastBubble ? lastBubble.getBoundingClientRect().top : -100000;
+
+  const aroundLatestMessage = allVisibleButtons.filter((x) => x.rect.top >= anchorTop - 40);
+
+  const targetList = (aroundLatestMessage.length > 0 ? aroundLatestMessage : allVisibleButtons)
+    .sort((a, b) => {
+      if (Math.abs(a.rect.top - b.rect.top) > 6) return a.rect.top - b.rect.top;
+      return a.rect.left - b.rect.left;
+    });
+
+  const chosen = targetList[displayIndex];
   if (!chosen) return null;
 
   const rect = chosen.btn.getBoundingClientRect();
-  return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2, label: text(chosen.btn) };
+  return JSON.stringify({ x: rect.left + rect.width / 2, y: rect.top + rect.height / 2, label: text(chosen.btn) });
 }
 """, displayIndex);
 
-    if (target is null) return false;
+    if (!TryReadClickTarget(targetData, out var target)) return false;
 
     await page.Mouse.MoveAsync((float)target.X, (float)target.Y);
     await page.Mouse.DownAsync();
@@ -1463,7 +1957,7 @@ static async Task<bool> ClickVisibleButtonByIndexAsync(IPage page, int displayIn
 
     if (isAutomation)
     {
-        await page.WaitForTimeoutAsync(2000);
+        await page.WaitForTimeoutAsync(650);
     }
 
     return true;
@@ -1471,7 +1965,7 @@ static async Task<bool> ClickVisibleButtonByIndexAsync(IPage page, int displayIn
 
 static async Task<JsonElement> CollectMenuDataAsync(IPage page)
 {
-    return await page.EvaluateAsync<JsonElement>("""
+    var menuJson = await page.EvaluateAsync<string>("""
 () => {
   const text = (el) => (el?.textContent || '').replace(/\s+/g, ' ').trim();
   const blockText = (el) => (el?.innerText || el?.textContent || '').replace(/\r/g, '').trim();
@@ -1480,24 +1974,26 @@ static async Task<JsonElement> CollectMenuDataAsync(IPage page)
   const lastBubble = bubbles.at(-1) || null;
 
   const allVisibleButtons = Array.from(document.querySelectorAll('button, [role="button"], .reply-markup-button, .Button'))
-    .map((btn, domIndex) => ({ btn, domIndex }))
-    .filter(({ btn }) => {
-      const rect = btn.getBoundingClientRect();
+    .map((btn, domIndex) => ({ btn, domIndex, rect: btn.getBoundingClientRect() }))
+    .filter(({ btn, rect }) => {
       const style = getComputedStyle(btn);
       const visible = rect.width > 0 && rect.height > 0 && style.visibility !== 'hidden' && style.display !== 'none';
       if (!visible) return false;
       const t = text(btn);
       return t.length > 0 || (btn.getAttribute('aria-label') || '').trim().length > 0;
-    })
-    .sort((a, b) => {
-      const ar = a.btn.getBoundingClientRect();
-      const br = b.btn.getBoundingClientRect();
-      if (Math.abs(ar.top - br.top) > 6) return ar.top - br.top;
-      return ar.left - br.left;
     });
 
-  const last30 = allVisibleButtons.slice(-30);
-  const visibleButtons = last30.map(({ btn, domIndex }, displayIndex) => ({
+  const anchorTop = lastBubble ? lastBubble.getBoundingClientRect().top : -100000;
+  const aroundLatestMessage = allVisibleButtons.filter((x) => x.rect.top >= anchorTop - 40);
+
+  const targetButtons = (aroundLatestMessage.length > 0 ? aroundLatestMessage : allVisibleButtons)
+    .sort((a, b) => {
+      if (Math.abs(a.rect.top - b.rect.top) > 6) return a.rect.top - b.rect.top;
+      return a.rect.left - b.rect.left;
+    })
+    .slice(-30);
+
+  const visibleButtons = targetButtons.map(({ btn, domIndex }, displayIndex) => ({
     index: displayIndex,
     domIndex,
     label: text(btn),
@@ -1508,16 +2004,19 @@ static async Task<JsonElement> CollectMenuDataAsync(IPage page)
   const messageTime = text(lastBubble?.querySelector('time, .time, .message-time'));
   const activeChatTitle = text(document.querySelector('.chat-info .title, .chat-info-wrapper .title, .topbar .title, header .title'));
 
-  return {
+  return JSON.stringify({
     extractedAt: new Date().toISOString(),
     activeChatTitle,
     messageAboveButtons,
     messageTime,
     visibleButtonCount: visibleButtons.length,
     visibleButtons
-  };
+  });
 }
 """);
+
+    return ParseJsonObjectOrDefault(menuJson,
+        """{"extractedAt":"","activeChatTitle":"","messageAboveButtons":"","messageTime":"","visibleButtonCount":0,"visibleButtons":[]}""");
 }
 
 static void PrintMenuToConsole(JsonElement result)
@@ -1582,6 +2081,148 @@ static string ResolveYandexBrowserPath()
     throw new FileNotFoundException("Не найден executable Яндекс Браузера. Укажите YANDEX_BROWSER_PATH.");
 }
 
+static JsonElement ParseJsonObjectOrDefault(string? data, string fallbackJson)
+{
+    try
+    {
+        using var fallbackDoc = JsonDocument.Parse(fallbackJson);
+        if (string.IsNullOrWhiteSpace(data))
+        {
+            return fallbackDoc.RootElement.Clone();
+        }
+
+        using var doc = JsonDocument.Parse(data);
+        if (doc.RootElement.ValueKind != JsonValueKind.Object)
+        {
+            return fallbackDoc.RootElement.Clone();
+        }
+
+        return doc.RootElement.Clone();
+    }
+    catch (JsonException)
+    {
+        using var fallbackDoc = JsonDocument.Parse(fallbackJson);
+        return fallbackDoc.RootElement.Clone();
+    }
+}
+
+static List<string> ParseStringArrayJson(string? data)
+{
+    if (string.IsNullOrWhiteSpace(data))
+    {
+        return new List<string>();
+    }
+
+    try
+    {
+        using var doc = JsonDocument.Parse(data);
+        if (doc.RootElement.ValueKind != JsonValueKind.Array)
+        {
+            return new List<string>();
+        }
+
+        var list = new List<string>();
+        foreach (var item in doc.RootElement.EnumerateArray())
+        {
+            if (item.ValueKind != JsonValueKind.String)
+            {
+                continue;
+            }
+
+            var value = item.GetString();
+            if (!string.IsNullOrWhiteSpace(value))
+            {
+                list.Add(value);
+            }
+        }
+
+        return list;
+    }
+    catch (JsonException)
+    {
+        return new List<string>();
+    }
+}
+
+static bool TryReadDealInfo(string? data, out DealInfo info)
+{
+    info = default!;
+    if (string.IsNullOrWhiteSpace(data))
+    {
+        return false;
+    }
+
+    try
+    {
+        using var doc = JsonDocument.Parse(data);
+        var root = doc.RootElement;
+        if (root.ValueKind != JsonValueKind.Object)
+        {
+            return false;
+        }
+
+        var messageText = root.TryGetProperty("MessageText", out var messageElement) && messageElement.ValueKind == JsonValueKind.String
+            ? messageElement.GetString() ?? string.Empty
+            : string.Empty;
+
+        var actionButtonLabel = root.TryGetProperty("ActionButtonLabel", out var actionElement) && actionElement.ValueKind == JsonValueKind.String
+            ? actionElement.GetString() ?? string.Empty
+            : string.Empty;
+
+        info = new DealInfo
+        {
+            MessageText = messageText,
+            ActionButtonLabel = string.IsNullOrWhiteSpace(actionButtonLabel) ? "(кнопка Купить* не найдена)" : actionButtonLabel
+        };
+
+        return true;
+    }
+    catch (JsonException)
+    {
+        return false;
+    }
+}
+
+static bool TryReadClickTarget(string? data, out ClickTarget target)
+{
+    target = default;
+    if (string.IsNullOrWhiteSpace(data))
+    {
+        return false;
+    }
+
+    try
+    {
+        using var doc = JsonDocument.Parse(data);
+        var root = doc.RootElement;
+        if (root.ValueKind != JsonValueKind.Object)
+        {
+            return false;
+        }
+
+        if (!root.TryGetProperty("x", out var xElement) || xElement.ValueKind != JsonValueKind.Number)
+        {
+            return false;
+        }
+
+        if (!root.TryGetProperty("y", out var yElement) || yElement.ValueKind != JsonValueKind.Number)
+        {
+            return false;
+        }
+
+        var label = root.TryGetProperty("label", out var labelElement) && labelElement.ValueKind == JsonValueKind.String
+            ? labelElement.GetString() ?? string.Empty
+            : string.Empty;
+
+        target = new ClickTarget(xElement.GetDouble(), yElement.GetDouble(), label);
+        return true;
+    }
+    catch (JsonException)
+    {
+        return false;
+    }
+}
+
 enum DealOutcome
 {
     Unknown,
@@ -1591,11 +2232,21 @@ enum DealOutcome
     Stopped
 }
 
-file sealed class ClickTarget
+file readonly record struct ClickTarget(double X, double Y, string Label);
+
+file sealed class DealActionButtonsState
 {
-    public required double X { get; init; }
-    public required double Y { get; init; }
-    public required string Label { get; init; }
+    public required bool HasBuy { get; init; }
+    public required bool HasMax { get; init; }
+    public required bool HasCreate { get; init; }
+    public required bool HasSpecifyRub { get; init; }
+}
+
+file sealed class SaleDealNotification
+{
+    public required string DealId { get; init; }
+    public required string AmountRub { get; init; }
+    public required string Bank { get; init; }
 }
 
 file sealed class ButtonDebugInfo
