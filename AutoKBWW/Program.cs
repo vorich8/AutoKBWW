@@ -90,9 +90,16 @@ async Task RunInteractiveLoopAsync(IPage page)
             continue;
         }
 
+        if (string.Equals(input, "T", StringComparison.OrdinalIgnoreCase) || string.Equals(input, "TEST", StringComparison.OrdinalIgnoreCase))
+        {
+            await RunSalesDealsTestAutomationAsync(page);
+            PrintCommandsHint();
+            continue;
+        }
+
         if (!int.TryParse(input, out var displayIndex))
         {
-            Console.WriteLine("Некорректный ввод. Укажите индекс, A, W, R, S или Q.");
+            Console.WriteLine("Некорректный ввод. Укажите индекс, A, W, T, R, S или Q.");
             PrintCommandsHint();
             continue;
         }
@@ -113,15 +120,16 @@ async Task RunInteractiveLoopAsync(IPage page)
 
 static void PrintCommandsHint()
 {
-    Console.WriteLine("Команды: индекс кнопки (0..), A - автосценарий P2P, W - мониторинг новых сделок продажи, R - перескан, S - стоп автоматики, Q - выход.");
+    Console.WriteLine("Команды: индекс кнопки (0..), A - автосценарий P2P, W - мониторинг новых сделок продажи, T - тестовая авто-ветка продажи, R - перескан, S - стоп автоматики, Q - выход.");
 }
 
 async Task RunSalesDealsWatcherAsync(IPage page)
 {
     stopAllRequested = false;
 
+    var scanAccountName = ReadSalesScanAccountName();
     var notificationUsers = ReadNotificationUsers();
-    Console.WriteLine($"Мониторинг продаж: уведомления будут отправляться: {string.Join(", ", notificationUsers)}");
+    Console.WriteLine($"Мониторинг продаж (аккаунт: {scanAccountName}): уведомления будут отправляться: {string.Join(", ", notificationUsers)}");
     Console.WriteLine("Запускаю мониторинг. Ищу новые сообщения вида '💡 Создана новая сделка ...'. Для остановки нажмите S.");
 
     var openedCrypto = await ClickChatByTitleAsync(page, "Crypto");
@@ -143,7 +151,7 @@ async Task RunSalesDealsWatcherAsync(IPage page)
             && !string.Equals(lastNotifiedDealId, saleDeal.DealId, StringComparison.OrdinalIgnoreCase))
         {
             Console.WriteLine($"Найдена новая сделка продажи: #{saleDeal.DealId}, {saleDeal.AmountRub} RUB, банк: {saleDeal.Bank}.");
-            var vo8rOpened = await NotifyCreatedSaleDealAsync(page, notificationUsers, saleDeal);
+            var vo8rOpened = await NotifyCreatedSaleDealAsync(page, notificationUsers, saleDeal, scanAccountName);
             if (stopAllRequested) return;
 
             lastNotifiedDealId = saleDeal.DealId;
@@ -162,6 +170,186 @@ async Task RunSalesDealsWatcherAsync(IPage page)
     }
 
     Console.WriteLine("Мониторинг новых сделок продажи остановлен.");
+}
+
+async Task RunSalesDealsTestAutomationAsync(IPage page)
+{
+    stopAllRequested = false;
+
+    var scanAccountName = ReadSalesScanAccountName();
+    var actionKeywordPrefixes = ReadSalesActionKeywordPrefixes();
+    var confirmPassword = ReadSalesConfirmPassword();
+    var notificationUsers = ReadNotificationUsers();
+
+    Console.WriteLine($"ТЕСТ-ПРОДАЖИ (аккаунт: {scanAccountName}). Ключевые слова кнопки: {string.Join(", ", actionKeywordPrefixes)}.");
+
+    var openedCrypto = await ClickChatByTitleAsync(page, "Crypto");
+    if (!openedCrypto)
+    {
+        Console.WriteLine("Не удалось открыть чат Crypto для тестовой ветки продаж.");
+        return;
+    }
+
+    await WaitWithStopAsync(page, 800);
+    if (stopAllRequested) return;
+
+    string? lastProcessedDealId = null;
+
+    while (!stopAllRequested)
+    {
+        var latestMessage = await ExtractLatestMessageTextAsync(page);
+        if (!TryParseCreatedSaleDeal(latestMessage, out var saleDeal)
+            || string.Equals(lastProcessedDealId, saleDeal.DealId, StringComparison.OrdinalIgnoreCase))
+        {
+            await WaitWithStopAsync(page, 1000);
+            continue;
+        }
+
+        lastProcessedDealId = saleDeal.DealId;
+        Console.WriteLine($"[TEST] Найдена новая сделка #{saleDeal.DealId}. Запускаю тестовую авто-цепочку...");
+
+        await NotifyUsersWithTextAsync(page, notificationUsers,
+            $"[{scanAccountName}] [TEST] Обнаружена сделка #{saleDeal.DealId} на {saleDeal.AmountRub} RUB через {saleDeal.Bank}. Запускаю тестовую цепочку кнопок.");
+        if (stopAllRequested) return;
+
+        var stepsOk = await ExecuteSalesDealTestSequenceAsync(page, actionKeywordPrefixes, confirmPassword);
+        if (!stepsOk)
+        {
+            Console.WriteLine("[TEST] Цепочка завершилась с ошибкой или неполными шагами.");
+        }
+        else
+        {
+            Console.WriteLine("[TEST] Цепочка выполнена.");
+        }
+
+        return;
+    }
+}
+
+async Task<bool> ExecuteSalesDealTestSequenceAsync(IPage page, IReadOnlyList<string> actionKeywordPrefixes, string confirmPassword)
+{
+    if (!await ClickVisibleButtonByTextAsync(page, "Посмотреть сделку", startsWith: true, preferExact: false))
+    {
+        Console.WriteLine("[TEST] Не удалось нажать 'Посмотреть сделку'.");
+        return false;
+    }
+
+    await WaitWithStopAsync(page, 700);
+    if (stopAllRequested) return false;
+
+    if (!await ClickVisibleButtonByTextAsync(page, "Принять сделку", startsWith: true, preferExact: false))
+    {
+        Console.WriteLine("[TEST] Не удалось нажать 'Принять сделку'.");
+        return false;
+    }
+
+    await WaitWithStopAsync(page, 700);
+    if (stopAllRequested) return false;
+
+    var keywordClicked = false;
+    foreach (var prefix in actionKeywordPrefixes)
+    {
+        if (await ClickVisibleButtonByTextAsync(page, prefix, startsWith: true, preferExact: false))
+        {
+            Console.WriteLine($"[TEST] Нажата кнопка по ключевому слову: {prefix}");
+            keywordClicked = true;
+            break;
+        }
+    }
+
+    if (!keywordClicked)
+    {
+        Console.WriteLine("[TEST] Не удалось нажать кнопку по ключевым словам.");
+        return false;
+    }
+
+    await WaitWithStopAsync(page, 700);
+    if (stopAllRequested) return false;
+
+    for (var i = 1; i <= 2; i++)
+    {
+        if (!await ClickVisibleButtonByTextAsync(page, "Продолжить", startsWith: true, preferExact: false))
+        {
+            Console.WriteLine($"[TEST] Не удалось нажать 'Продолжить' (итерация {i}/2).");
+            return false;
+        }
+
+        await WaitWithStopAsync(page, 700);
+        if (stopAllRequested) return false;
+    }
+
+    if (!await ClickAnyDynamicActionButtonAsync(page))
+    {
+        Console.WriteLine("[TEST] Не удалось нажать динамическую кнопку после двух 'Продолжить'.");
+        return false;
+    }
+
+    await WaitWithStopAsync(page, 700);
+    if (stopAllRequested) return false;
+
+    if (!await ClickVisibleButtonByTextAsync(page, "Продолжить", startsWith: true, preferExact: false))
+    {
+        Console.WriteLine("[TEST] Не удалось нажать 'Продолжить' после динамической кнопки.");
+        return false;
+    }
+
+    await WaitWithStopAsync(page, 1000);
+    if (stopAllRequested) return false;
+
+    if (!await ClickVisibleButtonByTextAsync(page, "Да", startsWith: true, preferExact: false))
+    {
+        Console.WriteLine("[TEST] Не удалось нажать 'Да' в новом сообщении.");
+        return false;
+    }
+
+    await WaitWithStopAsync(page, 700);
+    if (stopAllRequested) return false;
+
+    var sentPassword = await SendMessageToCurrentChatAsync(page, confirmPassword);
+    if (!sentPassword)
+    {
+        Console.WriteLine("[TEST] Не удалось отправить пароль подтверждения.");
+        return false;
+    }
+
+    Console.WriteLine("[TEST] Пароль подтверждения отправлен.");
+    return true;
+}
+
+async Task<bool> ClickAnyDynamicActionButtonAsync(IPage page)
+{
+    var labels = await CollectVisibleButtonsWithTimeoutAsync(page, 1200);
+    if (labels.Count == 0)
+    {
+        return false;
+    }
+
+    var ignored = new[]
+    {
+        "продолж",
+        "посмотр",
+        "принять",
+        "да",
+        "нет",
+        "назад",
+        "отмен",
+        "ответить"
+    };
+
+    var candidate = labels
+        .Select(x => (Original: x, Normalized: x.Trim()))
+        .FirstOrDefault(x => !string.IsNullOrWhiteSpace(x.Normalized)
+                             && x.Normalized != "?"
+                             && !ignored.Any(prefix => x.Normalized.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)));
+
+    if (string.IsNullOrWhiteSpace(candidate.Normalized))
+    {
+        return false;
+    }
+
+    Console.WriteLine($"[TEST] Пытаюсь нажать динамическую кнопку: '{candidate.Original}'.");
+    return await ClickVisibleButtonByTextAsync(page, candidate.Original, startsWith: true, preferExact: false)
+           || await ClickVisibleButtonByTextAsync(page, candidate.Original, startsWith: false, containsOnly: true, preferExact: false);
 }
 
 static async Task<string> ExtractLatestMessageTextAsync(IPage page)
@@ -217,9 +405,9 @@ static bool TryParseCreatedSaleDeal(string message, out SaleDealNotification dea
     return true;
 }
 
-async Task<bool> NotifyCreatedSaleDealAsync(IPage page, IReadOnlyList<string> users, SaleDealNotification deal)
+async Task<bool> NotifyCreatedSaleDealAsync(IPage page, IReadOnlyList<string> users, SaleDealNotification deal, string scanAccountName)
 {
-    var message = $"Создана новая сделка - #{deal.DealId} на {deal.AmountRub} RUB через {deal.Bank}";
+    var message = $"[{scanAccountName}] Создана новая сделка - #{deal.DealId} на {deal.AmountRub} RUB через {deal.Bank}";
 
     foreach (var user in users)
     {
@@ -1543,6 +1731,39 @@ async Task NotifyFoundDealToUsersAsync(IPage page, IReadOnlyList<string> users, 
     }
 
     await WaitWithStopAsync(page, 2000);
+}
+
+static string ReadSalesScanAccountName()
+{
+    Console.Write("Введите обозначение аккаунта для логов/уведомлений (Enter = Account1): ");
+    var value = (Console.ReadLine() ?? string.Empty).Trim();
+    return string.IsNullOrWhiteSpace(value) ? "Account1" : value;
+}
+
+static IReadOnlyList<string> ReadSalesActionKeywordPrefixes()
+{
+    Console.Write("Введите ключевые слова (префиксы) для кнопки шага после 'Принять сделку' через запятую: ");
+    var raw = Console.ReadLine() ?? string.Empty;
+
+    var values = raw
+        .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+        .Where(x => !string.IsNullOrWhiteSpace(x))
+        .Distinct(StringComparer.OrdinalIgnoreCase)
+        .ToList();
+
+    if (values.Count == 0)
+    {
+        values.Add("СБП");
+    }
+
+    return values;
+}
+
+static string ReadSalesConfirmPassword()
+{
+    Console.Write("Введите пароль подтверждения для тестовой ветки продаж: ");
+    var value = (Console.ReadLine() ?? string.Empty).Trim();
+    return value;
 }
 
 IReadOnlyList<string> ReadNotificationUsers()
