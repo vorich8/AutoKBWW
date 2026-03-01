@@ -1046,7 +1046,7 @@ async Task<P2POffer?> FindBestOfferWithPagingAsync(IPage page, double targetPric
 
         if (DateTimeOffset.UtcNow - lastNoDealNotifyAt >= TimeSpan.FromMinutes(5))
         {
-            await SendNoDealsNotificationAsync(page, notificationUsers, startedAt)
+            await SendNoDealsNotificationAsync(page, notificationUsers, startedAt);
             if (stopAllRequested)
             {
                 Console.WriteLine("Поиск остановлен клавишей S.");
