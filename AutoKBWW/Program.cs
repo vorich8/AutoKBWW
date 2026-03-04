@@ -79,28 +79,28 @@ async Task RunInteractiveLoopAsync(IPage page)
             continue;
         }
 
-        if (string.Equals(input, "A", StringComparison.OrdinalIgnoreCase) || string.Equals(input, "AUTO", StringComparison.OrdinalIgnoreCase))
+        if (string.Equals(input, "A", StringComparison.OrdinalIgnoreCase))
         {
             await RunP2PAutomationAsync(page);
             PrintCommandsHint();
             continue;
         }
 
-        if (string.Equals(input, "W", StringComparison.OrdinalIgnoreCase) || string.Equals(input, "WATCH", StringComparison.OrdinalIgnoreCase))
+        if (string.Equals(input, "W", StringComparison.OrdinalIgnoreCase))
         {
             await RunSalesDealsWatcherAsync(page);
             PrintCommandsHint();
             continue;
         }
 
-        if (string.Equals(input, "T", StringComparison.OrdinalIgnoreCase) || string.Equals(input, "TEST", StringComparison.OrdinalIgnoreCase))
+        if (string.Equals(input, "T", StringComparison.OrdinalIgnoreCase))
         {
             await RunSalesDealsTestAutomationAsync(page);
             PrintCommandsHint();
             continue;
         }
 
-        if (string.Equals(input, "V", StringComparison.OrdinalIgnoreCase) || string.Equals(input, "VOICE", StringComparison.OrdinalIgnoreCase) || string.Equals(input, "REMOTE", StringComparison.OrdinalIgnoreCase))
+        if (string.Equals(input, "V", StringComparison.OrdinalIgnoreCase))
         {
             await RunVo8rRemoteControlAsync(page);
             PrintCommandsHint();
@@ -109,7 +109,7 @@ async Task RunInteractiveLoopAsync(IPage page)
 
         if (!int.TryParse(input, out var displayIndex))
         {
-            Console.WriteLine("Некорректный ввод. Укажите индекс, A, W, T, V, R, S или Q.");
+            Console.WriteLine("Некорректный ввод. Укажите одну букву команды: A/W/T/V/R/S/Q или индекс кнопки.");
             PrintCommandsHint();
             continue;
         }
@@ -130,7 +130,7 @@ async Task RunInteractiveLoopAsync(IPage page)
 
 void PrintCommandsHint()
 {
-    Console.WriteLine("Команды: индекс кнопки (0..), A - автосценарий P2P, W - мониторинг новых сделок продажи, T - тестовая авто-ветка продажи, V - управление через VO8R, R - перескан, S - стоп автоматики, Q - выход.");
+    Console.WriteLine("Команды: индекс кнопки (0..), A - автосценарий P2P, W - мониторинг новых сделок продажи, T - тестовая авто-ветка продажи, V - управление через VO8R, R - перескан, S - стоп, Q - выход.");
 }
 
 async Task RunVo8rRemoteControlAsync(IPage page)
@@ -166,21 +166,21 @@ async Task RunVo8rRemoteControlAsync(IPage page)
         lastCommand = command;
         Console.WriteLine($"[REMOTE] Получена команда из VO8R: {command}");
 
-        if (command.StartsWith("STOP", StringComparison.OrdinalIgnoreCase) || command == "S")
+        if (string.Equals(command, "S", StringComparison.OrdinalIgnoreCase))
         {
             stopAllRequested = true;
             break;
         }
 
         var handledCommand = false;
-        if (command.StartsWith("W", StringComparison.OrdinalIgnoreCase) || command.StartsWith("WATCH", StringComparison.OrdinalIgnoreCase))
+        if (string.Equals(command, "W", StringComparison.OrdinalIgnoreCase))
         {
             handledCommand = true;
             await SendMessageToCurrentChatAsync(page, "[VO8R-REMOTE] Запускаю W: начинаю сканировать новые сделки.");
             await RunSalesDealsWatcherAsync(page, scanAccountNameOverride: "VO8R-REMOTE", notificationUsersOverride: ["VO8R"], sendStartNotification: false);
             stopAllRequested = false;
         }
-        else if (command.StartsWith("T", StringComparison.OrdinalIgnoreCase) || command.StartsWith("TEST", StringComparison.OrdinalIgnoreCase))
+        else if (string.Equals(command, "T", StringComparison.OrdinalIgnoreCase))
         {
             handledCommand = true;
             await ClickChatByTitleAsync(page, "Crypto");
@@ -232,9 +232,9 @@ string BuildRemoteCommandsMessage()
 {
     return """
 Доступные автоматизации:
-W - WATCH (мониторинг продаж)
-T - TEST (тестовая ветка продаж)
-STOP - остановить текущую автоматику
+W - мониторинг продаж
+T - тестовая ветка продаж
+S - остановить текущую автоматику
 Отправьте команду одним сообщением.
 """;
 }
@@ -2269,7 +2269,7 @@ async Task WaitWithStopAsync(IPage page, int totalMs)
             break;
         }
 
-        if (remoteStopChecksEnabled && !remoteStopCheckInProgress && DateTimeOffset.UtcNow - lastRemoteStopCheckAt >= TimeSpan.FromMinutes(10))
+        if (!remoteStopCheckInProgress && DateTimeOffset.UtcNow - lastRemoteStopCheckAt >= TimeSpan.FromSeconds(5))
         {
             lastRemoteStopCheckAt = DateTimeOffset.UtcNow;
             var remoteStop = await TryCheckRemoteStopCommandAsync(page);
@@ -2304,20 +2304,18 @@ async Task<bool> TryCheckRemoteStopCommandAsync(IPage page)
 
         var command = await ReadLatestVo8rControlCommandAsync(page);
         var shouldStop = !string.IsNullOrWhiteSpace(command) &&
-                         (command.StartsWith("STOP", StringComparison.OrdinalIgnoreCase)
-                          || command.StartsWith("СТОП", StringComparison.OrdinalIgnoreCase)
-                          || string.Equals(command, "S", StringComparison.OrdinalIgnoreCase));
+                         string.Equals(command, "S", StringComparison.OrdinalIgnoreCase);
 
         await ClickChatByTitleAsync(page, "Crypto");
         await page.WaitForTimeoutAsync(300);
 
         if (shouldStop)
         {
-            Console.WriteLine("[REMOTE] Получена команда STOP из VO8R.");
+            Console.WriteLine("[REMOTE] Получена команда S из VO8R.");
             return true;
         }
 
-        Console.WriteLine("[REMOTE] STOP-команда не найдена.");
+        Console.WriteLine("[REMOTE] Команда S не найдена.");
         return false;
     }
     finally
