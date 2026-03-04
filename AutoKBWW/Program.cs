@@ -618,7 +618,11 @@ async Task<bool> SendVo8rProgressAsync(IPage page, string text)
     }
 
     await WaitWithStopAsync(page, 1000);
-    return true;
+
+        if (stopAllRequested)
+        {
+            break;
+        }
 }
 
 async Task WaitForVo8rReactionDebugAsync(IPage page, SaleDealNotification deal)
@@ -684,7 +688,10 @@ async Task ReturnToCryptoBotAfterReactionAsync(IPage page, string dealId)
         Console.WriteLine("[VO8R] После звонка и 30 сек ожидания реакции нет. Звоню повторно...");
     }
 
-    Console.WriteLine("Ожидание реакции в чате VO8R остановлено.");
+    if (stopAllRequested)
+    {
+        return;
+    }
 }
 
 static bool LogVo8rReactionScan(SaleDealReactionScan scan, string dealId)
