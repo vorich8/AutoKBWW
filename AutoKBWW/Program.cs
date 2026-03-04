@@ -172,23 +172,30 @@ async Task RunVo8rRemoteControlAsync(IPage page)
             break;
         }
 
+        var handledCommand = false;
         if (command.StartsWith("W", StringComparison.OrdinalIgnoreCase) || command.StartsWith("WATCH", StringComparison.OrdinalIgnoreCase))
         {
+            handledCommand = true;
             await SendMessageToCurrentChatAsync(page, "[VO8R-REMOTE] Запускаю W: начинаю сканировать новые сделки.");
             await RunSalesDealsWatcherAsync(page, scanAccountNameOverride: "VO8R-REMOTE", notificationUsersOverride: ["VO8R"], sendStartNotification: false);
             stopAllRequested = false;
         }
         else if (command.StartsWith("T", StringComparison.OrdinalIgnoreCase) || command.StartsWith("TEST", StringComparison.OrdinalIgnoreCase))
         {
+            handledCommand = true;
             await ClickChatByTitleAsync(page, "Crypto");
             await RunSalesDealsTestAutomationAsync(page, scanAccountNameOverride: "VO8R-REMOTE", actionKeywordPrefixesOverride: ["СБП"], confirmPasswordOverride: string.Empty, notificationUsersOverride: ["VO8R"]);
             stopAllRequested = false;
         }
 
+        if (!handledCommand)
+        {
+            continue;
+        }
+
         await ClickChatByTitleAsync(page, "VO8R");
         await page.WaitForTimeoutAsync(500);
         await SendMessageToCurrentChatAsync(page, "Команда выполнена. Жду следующую.");
-        await SendMessageToCurrentChatAsync(page, BuildRemoteCommandsMessage());
     }
 
     Console.WriteLine("Удаленное управление через VO8R остановлено.");
@@ -304,34 +311,22 @@ async Task RunSalesDealsWatcherAsync(IPage page, string? scanAccountNameOverride
 
 async Task<bool> EnsureCryptoChatOpenedAsync(IPage page)
 {
-    for (var attempt = 1; attempt <= 5; attempt++)
+    for (var attempt = 1; attempt <= 3; attempt++)
     {
-        _ = await OpenCryptoChatAsync(page);
+        var opened = await OpenCryptoChatAsync(page);
         await WaitWithStopAsync(page, 500);
         if (stopAllRequested) return false;
 
-        var activeTitle = await ReadActiveChatTitleAsync(page);
-        var selectedTitle = await ReadSelectedChatTitleAsync(page);
-        if (IsCryptoChatTitle(activeTitle) || IsCryptoChatTitle(selectedTitle))
+        if (opened)
         {
-            var confirmedTitle = IsCryptoChatTitle(activeTitle) ? activeTitle : selectedTitle;
-            Console.WriteLine($"[WATCH] Подтвержден переход в чат: {confirmedTitle}.");
+            Console.WriteLine("[WATCH] Переход в чат Crypto выполнен.");
             return true;
         }
 
-        // fallback probe via menu collector when header title is temporarily empty
-        var menu = await CollectMenuDataAsync(page);
-        var menuTitle = GetString(menu, "activeChatTitle");
-        if (IsCryptoChatTitle(menuTitle))
-        {
-            Console.WriteLine($"[WATCH] Подтвержден переход в чат через меню: {menuTitle}.");
-            return true;
-        }
-
-        Console.WriteLine($"[WATCH] Попытка {attempt}/5: переход в Crypto не подтвержден (активный чат: '{activeTitle}', выбранный в списке: '{selectedTitle}', меню: '{menuTitle}').");
+        Console.WriteLine($"[WATCH] Попытка {attempt}/3: не удалось открыть чат Crypto.");
     }
 
-    Console.WriteLine("[WATCH] Не удалось гарантированно вернуться в чат Crypto после ожидания реакции.");
+    Console.WriteLine("[WATCH] Не удалось открыть чат Crypto.");
     return false;
 }
 
