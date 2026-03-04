@@ -237,9 +237,6 @@ async Task RunSalesDealsWatcherAsync(IPage page, string? scanAccountNameOverride
     Console.WriteLine($"Мониторинг продаж (аккаунт: {scanAccountName}): уведомления будут отправляться: {string.Join(", ", notificationUsers)}");
     Console.WriteLine("Запускаю мониторинг. Ищу новые сообщения вида '💡 Создана новая сделка ...'. Для остановки нажмите S.");
 
-    await NotifyUsersWithTextAsync(page, notificationUsers, $"[{scanAccountName}] Запускаю W: начинаю сканировать новые сделки.");
-    if (stopAllRequested) return;
-
     var openedCrypto = await ClickChatByTitleAsync(page, "Crypto");
     if (!openedCrypto)
     {
@@ -249,6 +246,16 @@ async Task RunSalesDealsWatcherAsync(IPage page, string? scanAccountNameOverride
 
     await WaitWithStopAsync(page, 1000);
     if (stopAllRequested) return;
+
+    await NotifyUsersWithTextAsync(page, notificationUsers, $"[{scanAccountName}] Запускаю W: начинаю сканировать новые сделки.");
+    if (stopAllRequested) return;
+
+    var backToCryptoAfterStartNotify = await EnsureCryptoChatOpenedAsync(page);
+    if (!backToCryptoAfterStartNotify)
+    {
+        Console.WriteLine("[WATCH] После стартового уведомления не удалось подтвердить чат Crypto. Останавливаю W.");
+        return;
+    }
 
     string? lastNotifiedDealId = null;
 
@@ -289,35 +296,78 @@ async Task RunSalesDealsWatcherAsync(IPage page, string? scanAccountNameOverride
 
 async Task<bool> EnsureCryptoChatOpenedAsync(IPage page)
 {
-    for (var attempt = 1; attempt <= 4; attempt++)
+    for (var attempt = 1; attempt <= 5; attempt++)
     {
-        var opened = await ClickChatByTitleAsync(page, "Crypto");
-        await WaitWithStopAsync(page, 450);
+        _ = await ClickChatByTitleAsync(page, "Crypto");
+        await WaitWithStopAsync(page, 500);
         if (stopAllRequested) return false;
 
         var activeTitle = await ReadActiveChatTitleAsync(page);
-        var isCryptoActive = !string.IsNullOrWhiteSpace(activeTitle)
-                             && activeTitle.Contains("crypto", StringComparison.OrdinalIgnoreCase);
-
-        if (opened && isCryptoActive)
+        if (IsCryptoChatTitle(activeTitle))
         {
             Console.WriteLine($"[WATCH] Подтвержден переход в чат: {activeTitle}.");
             return true;
         }
 
-        Console.WriteLine($"[WATCH] Попытка {attempt}/4: переход в Crypto не подтвержден (активный чат: '{activeTitle}').");
+        // fallback probe via menu collector when header title is temporarily empty
+        var menu = await CollectMenuDataAsync(page);
+        var menuTitle = GetString(menu, "activeChatTitle");
+        if (IsCryptoChatTitle(menuTitle))
+        {
+            Console.WriteLine($"[WATCH] Подтвержден переход в чат через меню: {menuTitle}.");
+            return true;
+        }
+
+        Console.WriteLine($"[WATCH] Попытка {attempt}/5: переход в Crypto не подтвержден (активный чат: '{activeTitle}', меню: '{menuTitle}').");
     }
 
     Console.WriteLine("[WATCH] Не удалось гарантированно вернуться в чат Crypto после ожидания реакции.");
     return false;
 }
 
+bool IsCryptoChatTitle(string? title)
+{
+    if (string.IsNullOrWhiteSpace(title)) return false;
+
+    return title.Contains("crypto", StringComparison.OrdinalIgnoreCase)
+           || title.Contains("крипто", StringComparison.OrdinalIgnoreCase);
+}
+
 async Task<string> ReadActiveChatTitleAsync(IPage page)
 {
     var title = await page.EvaluateAsync<string>("""
 () => {
-  const read = (el) => (el?.innerText || el?.textContent || '').trim();
-  return read(document.querySelector('.chat-info .title, .chat-info-wrapper .title, .topbar .title, header .title'));
+  const read = (el) => (el?.innerText || el?.textContent || '').replace(/\s+/g, ' ').trim();
+  const selectors = [
+    '.chat-info .title',
+    '.chat-info-wrapper .title',
+    '.topbar .title',
+    'header .title',
+    '.chat-title',
+    '.TopBar .title',
+    '.ChatHeader .title',
+    '.chat[data-type="chat"] .title'
+  ];
+
+  for (const selector of selectors) {
+    const value = read(document.querySelector(selector));
+    if (value) return value;
+  }
+
+  const selectedSelectors = [
+    '.chatlist-chat.active .title',
+    '.chat-item.active .title',
+    '.ListItem.active .title',
+    '.chatlist .active [dir="auto"]',
+    '.chatlist .active .fullName'
+  ];
+
+  for (const selector of selectedSelectors) {
+    const value = read(document.querySelector(selector));
+    if (value) return value;
+  }
+
+  return '';
 }
 """);
 
