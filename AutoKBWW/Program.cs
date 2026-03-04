@@ -2265,7 +2265,7 @@ async Task WaitWithStopAsync(IPage page, int totalMs)
             break;
         }
 
-        if (!remoteStopCheckInProgress && DateTimeOffset.UtcNow - lastRemoteStopCheckAt >= TimeSpan.FromSeconds(5))
+        if (remoteStopChecksEnabled && !remoteStopCheckInProgress && DateTimeOffset.UtcNow - lastRemoteStopCheckAt >= TimeSpan.FromSeconds(5))
         {
             lastRemoteStopCheckAt = DateTimeOffset.UtcNow;
             var remoteStop = await TryCheckRemoteStopCommandAsync(page);
@@ -2287,23 +2287,19 @@ async Task<bool> TryCheckRemoteStopCommandAsync(IPage page)
     remoteStopCheckInProgress = true;
     try
     {
-        Console.WriteLine("[REMOTE] Проверяю в VO8R команду остановки...");
-
-        var openedVo8r = await ClickChatByTitleAsync(page, "VO8R");
-        if (!openedVo8r)
+        var activeTitle = await ReadActiveChatTitleAsync(page);
+        var selectedTitle = await ReadSelectedChatTitleAsync(page);
+        var inVo8r = activeTitle.Contains("vo8r", StringComparison.OrdinalIgnoreCase)
+                     || selectedTitle.Contains("vo8r", StringComparison.OrdinalIgnoreCase);
+        if (!inVo8r)
         {
-            Console.WriteLine("[REMOTE] Не удалось открыть VO8R для проверки стоп-команды.");
             return false;
         }
 
-        await page.WaitForTimeoutAsync(300);
-
+        Console.WriteLine("[REMOTE] Проверяю в VO8R команду S...");
         var command = await ReadLatestVo8rControlCommandAsync(page);
-        var shouldStop = !string.IsNullOrWhiteSpace(command) &&
-                         string.Equals(command, "S", StringComparison.OrdinalIgnoreCase);
-
-        await ClickChatByTitleAsync(page, "Crypto Bot");
-        await page.WaitForTimeoutAsync(300);
+        var shouldStop = !string.IsNullOrWhiteSpace(command)
+                         && string.Equals(command, "S", StringComparison.OrdinalIgnoreCase);
 
         if (shouldStop)
         {
@@ -2311,7 +2307,6 @@ async Task<bool> TryCheckRemoteStopCommandAsync(IPage page)
             return true;
         }
 
-        Console.WriteLine("[REMOTE] Команда S не найдена.");
         return false;
     }
     finally
