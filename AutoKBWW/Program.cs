@@ -486,7 +486,8 @@ static async Task<SaleDealNotification?> ExtractNewestCreatedSaleDealAsync(IPage
 {
     var messagesJson = await page.EvaluateAsync<string>("""
 () => {
-  const normalize = (s) => (s || '').replace(//g, '').trim();
+  const normalize = (s) => (s || '').replace(/\r/g, '').trim();
+/g, '').trim();
   const nodes = Array.from(document.querySelectorAll('.bubble, .message')).slice(-60);
   const texts = [];
 
@@ -581,6 +582,21 @@ async Task<bool> NotifyCreatedSaleDealAsync(IPage page, IReadOnlyList<string> us
             continue;
         }
 
+async Task<bool> SendVo8rProgressAsync(IPage page, string text)
+{
+    var sent = await SendMessageToCurrentChatAsync(page, text);
+    if (!sent)
+    {
+        Console.WriteLine("[VO8R] Не удалось отправить статусное сообщение в VO8R.");
+    }
+
+    return sent;
+}
+
+    await SendVo8rProgressAsync(page, $"[W] Сделка #{deal.DealId}: жду реакцию (до 1 мин).");
+        await SendVo8rProgressAsync(page, $"[W] Сделка #{deal.DealId}: реакции нет, запускаю звонок.");
+        await SendVo8rProgressAsync(page, $"[W] Сделка #{deal.DealId}: после звонка реакции нет, повторяю звонок.");
+    await SendVo8rProgressAsync(page, $"[W] Сделка #{dealId}: реакция получена, возвращаюсь в Crypto Bot.");
         await WaitWithStopAsync(page, 1000);
         if (stopAllRequested) return false;
 
