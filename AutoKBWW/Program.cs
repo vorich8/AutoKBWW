@@ -147,14 +147,7 @@ async Task RunVo8rRemoteControlAsync(IPage page)
 
     await page.WaitForTimeoutAsync(500);
 
-    var introSent = await SendMessageToCurrentChatAsync(page,
-        """
-Доступные автоматизации:
-W - WATCH (мониторинг продаж)
-T - TEST (тестовая ветка продаж)
-STOP - остановить текущую автоматику
-Отправьте команду одним сообщением.
-""");
+    var introSent = await SendMessageToCurrentChatAsync(page, BuildRemoteCommandsMessage());
     if (!introSent)
     {
         Console.WriteLine("Не удалось отправить вводное сообщение в VO8R.");
@@ -195,6 +188,7 @@ STOP - остановить текущую автоматику
         await ClickChatByTitleAsync(page, "VO8R");
         await page.WaitForTimeoutAsync(500);
         await SendMessageToCurrentChatAsync(page, "Команда выполнена. Жду следующую.");
+        await SendMessageToCurrentChatAsync(page, BuildRemoteCommandsMessage());
     }
 
     Console.WriteLine("Удаленное управление через VO8R остановлено.");
@@ -227,6 +221,17 @@ async Task<string?> ReadLatestVo8rControlCommandAsync(IPage page)
     return string.IsNullOrWhiteSpace(text) ? null : text.Trim();
 }
 
+string BuildRemoteCommandsMessage()
+{
+    return """
+Доступные автоматизации:
+W - WATCH (мониторинг продаж)
+T - TEST (тестовая ветка продаж)
+STOP - остановить текущую автоматику
+Отправьте команду одним сообщением.
+""";
+}
+
 async Task RunSalesDealsWatcherAsync(IPage page, string? scanAccountNameOverride = null, IReadOnlyList<string>? notificationUsersOverride = null, bool sendStartNotification = true)
 {
     stopAllRequested = false;
@@ -237,7 +242,7 @@ async Task RunSalesDealsWatcherAsync(IPage page, string? scanAccountNameOverride
     Console.WriteLine($"Мониторинг продаж (аккаунт: {scanAccountName}): уведомления будут отправляться: {string.Join(", ", notificationUsers)}");
     Console.WriteLine("Запускаю мониторинг. Ищу новые сообщения вида '💡 Создана новая сделка ...'. Для остановки нажмите S.");
 
-    var openedCrypto = await ClickChatByTitleAsync(page, "Crypto");
+    var openedCrypto = await OpenCryptoChatAsync(page);
     if (!openedCrypto)
     {
         Console.WriteLine("Не удалось открыть чат Crypto для старта мониторинга продаж.");
@@ -301,7 +306,7 @@ async Task<bool> EnsureCryptoChatOpenedAsync(IPage page)
 {
     for (var attempt = 1; attempt <= 5; attempt++)
     {
-        _ = await ClickChatByTitleAsync(page, "Crypto");
+        _ = await OpenCryptoChatAsync(page);
         await WaitWithStopAsync(page, 500);
         if (stopAllRequested) return false;
 
@@ -334,8 +339,27 @@ bool IsCryptoChatTitle(string? title)
 {
     if (string.IsNullOrWhiteSpace(title)) return false;
 
-    return title.Contains("crypto", StringComparison.OrdinalIgnoreCase)
-           || title.Contains("крипто", StringComparison.OrdinalIgnoreCase);
+    var normalized = title.Trim();
+    if (normalized.StartsWith("[", StringComparison.Ordinal)
+        || normalized.Contains("сделк", StringComparison.OrdinalIgnoreCase)
+        || normalized.Contains("возвращ", StringComparison.OrdinalIgnoreCase)
+        || normalized.Length > 40)
+    {
+        return false;
+    }
+
+    return normalized.Equals("Crypto Bot", StringComparison.OrdinalIgnoreCase)
+           || normalized.Equals("Crypto", StringComparison.OrdinalIgnoreCase)
+           || normalized.Equals("Крипто Бот", StringComparison.OrdinalIgnoreCase)
+           || normalized.Equals("Крипто", StringComparison.OrdinalIgnoreCase)
+           || normalized.Equals("CryptoBot", StringComparison.OrdinalIgnoreCase);
+}
+
+async Task<bool> OpenCryptoChatAsync(IPage page)
+{
+    if (await ClickChatByTitleAsync(page, "Crypto Bot")) return true;
+    if (await ClickChatByTitleAsync(page, "Crypto")) return true;
+    return false;
 }
 
 async Task<string> ReadActiveChatTitleAsync(IPage page)
@@ -418,7 +442,7 @@ async Task RunSalesDealsTestAutomationAsync(IPage page, string? scanAccountNameO
 
     Console.WriteLine($"ТЕСТ-ПРОДАЖИ (аккаунт: {scanAccountName}). Ключевые слова кнопки: {string.Join(", ", actionKeywordPrefixes)}.");
 
-    var openedCrypto = await ClickChatByTitleAsync(page, "Crypto");
+    var openedCrypto = await OpenCryptoChatAsync(page);
     if (!openedCrypto)
     {
         Console.WriteLine("Не удалось открыть чат Crypto для тестовой ветки продаж.");
