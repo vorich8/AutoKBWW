@@ -181,8 +181,8 @@ STOP - остановить текущую автоматику
 
         if (command.StartsWith("W", StringComparison.OrdinalIgnoreCase) || command.StartsWith("WATCH", StringComparison.OrdinalIgnoreCase))
         {
-            await ClickChatByTitleAsync(page, "Crypto");
-            await RunSalesDealsWatcherAsync(page, scanAccountNameOverride: "VO8R-REMOTE", notificationUsersOverride: ["VO8R"]);
+            await SendMessageToCurrentChatAsync(page, "[VO8R-REMOTE] Запускаю W: начинаю сканировать новые сделки.");
+            await RunSalesDealsWatcherAsync(page, scanAccountNameOverride: "VO8R-REMOTE", notificationUsersOverride: ["VO8R"], sendStartNotification: false);
             stopAllRequested = false;
         }
         else if (command.StartsWith("T", StringComparison.OrdinalIgnoreCase) || command.StartsWith("TEST", StringComparison.OrdinalIgnoreCase))
@@ -227,7 +227,7 @@ async Task<string?> ReadLatestVo8rControlCommandAsync(IPage page)
     return string.IsNullOrWhiteSpace(text) ? null : text.Trim();
 }
 
-async Task RunSalesDealsWatcherAsync(IPage page, string? scanAccountNameOverride = null, IReadOnlyList<string>? notificationUsersOverride = null)
+async Task RunSalesDealsWatcherAsync(IPage page, string? scanAccountNameOverride = null, IReadOnlyList<string>? notificationUsersOverride = null, bool sendStartNotification = true)
 {
     stopAllRequested = false;
     remoteStopChecksEnabled = true;
@@ -247,8 +247,11 @@ async Task RunSalesDealsWatcherAsync(IPage page, string? scanAccountNameOverride
     await WaitWithStopAsync(page, 1000);
     if (stopAllRequested) return;
 
-    await NotifyUsersWithTextAsync(page, notificationUsers, $"[{scanAccountName}] Запускаю W: начинаю сканировать новые сделки.");
-    if (stopAllRequested) return;
+    if (sendStartNotification)
+    {
+        await NotifyUsersWithTextAsync(page, notificationUsers, $"[{scanAccountName}] Запускаю W: начинаю сканировать новые сделки.");
+        if (stopAllRequested) return;
+    }
 
     var backToCryptoAfterStartNotify = await EnsureCryptoChatOpenedAsync(page);
     if (!backToCryptoAfterStartNotify)
@@ -303,9 +306,11 @@ async Task<bool> EnsureCryptoChatOpenedAsync(IPage page)
         if (stopAllRequested) return false;
 
         var activeTitle = await ReadActiveChatTitleAsync(page);
-        if (IsCryptoChatTitle(activeTitle))
+        var selectedTitle = await ReadSelectedChatTitleAsync(page);
+        if (IsCryptoChatTitle(activeTitle) || IsCryptoChatTitle(selectedTitle))
         {
-            Console.WriteLine($"[WATCH] Подтвержден переход в чат: {activeTitle}.");
+            var confirmedTitle = IsCryptoChatTitle(activeTitle) ? activeTitle : selectedTitle;
+            Console.WriteLine($"[WATCH] Подтвержден переход в чат: {confirmedTitle}.");
             return true;
         }
 
@@ -318,7 +323,7 @@ async Task<bool> EnsureCryptoChatOpenedAsync(IPage page)
             return true;
         }
 
-        Console.WriteLine($"[WATCH] Попытка {attempt}/5: переход в Crypto не подтвержден (активный чат: '{activeTitle}', меню: '{menuTitle}').");
+        Console.WriteLine($"[WATCH] Попытка {attempt}/5: переход в Crypto не подтвержден (активный чат: '{activeTitle}', выбранный в списке: '{selectedTitle}', меню: '{menuTitle}').");
     }
 
     Console.WriteLine("[WATCH] Не удалось гарантированно вернуться в чат Crypto после ожидания реакции.");
@@ -363,6 +368,33 @@ async Task<string> ReadActiveChatTitleAsync(IPage page)
   ];
 
   for (const selector of selectedSelectors) {
+    const value = read(document.querySelector(selector));
+    if (value) return value;
+  }
+
+  return '';
+}
+""");
+
+    return title ?? string.Empty;
+}
+
+async Task<string> ReadSelectedChatTitleAsync(IPage page)
+{
+    var title = await page.EvaluateAsync<string>("""
+() => {
+  const read = (el) => (el?.innerText || el?.textContent || '').replace(/\s+/g, ' ').trim();
+  const selectors = [
+    '.chatlist-chat.active .title',
+    '.chat-item.active .title',
+    '.ListItem.active .title',
+    '.chatlist .active [dir="auto"]',
+    '.chatlist .active .fullName',
+    '.chatlist .active .user-title',
+    '[data-peer-id].active .title'
+  ];
+
+  for (const selector of selectors) {
     const value = read(document.querySelector(selector));
     if (value) return value;
   }
