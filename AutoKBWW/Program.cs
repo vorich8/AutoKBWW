@@ -664,16 +664,16 @@ async Task WaitForVo8rReactionDebugAsync(IPage page, SaleDealNotification deal)
         }
 
         await WaitWithStopAsync(page, 1200);
-static bool LogVo8rReactionScan(SaleDealReactionScan scan, string dealId)
+bool LogVo8rReactionScan(SaleDealReactionScan scan, string dealId)
         Console.WriteLine($"[VO8R][{DateTime.Now:HH:mm:ss}] Реакции по сделке #{dealId} пока нет.");
     Console.WriteLine($"[VO8R][{DateTime.Now:HH:mm:ss}] ✅ Реакция по сделке #{dealId}: {reactionsCompact}");
 async Task ReturnToCryptoBotAfterReactionAsync(IPage page, string dealId)
     Console.WriteLine($"[VO8R] Реакция подтверждена для сделки #{dealId}. Возвращаюсь в чат Crypto Bot...");
     await SendVo8rProgressAsync(page, $"[W] Сделка #{dealId}: реакция получена, возвращаюсь в Crypto Bot.");
 
-        var callWaitUntil = DateTimeOffset.UtcNow.AddSeconds(30);
-        while (!stopAllRequested && DateTimeOffset.UtcNow < callWaitUntil)
-        {
+async Task<bool> ClickVo8rCallButtonAsync(IPage page)
+async Task<bool> DetectOutgoingCallMessageAsync(IPage page)
+async Task<SaleDealReactionScan> CollectVo8rReactionScanAsync(IPage page, string dealId)
             var callScan = await CollectVo8rReactionScanAsync(page, deal.DealId);
             var callHasReaction = LogVo8rReactionScan(callScan, deal.DealId);
             if (callHasReaction)
