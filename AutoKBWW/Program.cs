@@ -264,10 +264,15 @@ async Task RunSalesDealsWatcherAsync(IPage page, string? scanAccountNameOverride
             if (vo8rOpened)
             {
                 await WaitForVo8rReactionDebugAsync(page, saleDeal);
+                if (stopAllRequested) return;
+
+                await EnsureCryptoChatOpenedAsync(page);
+                Console.WriteLine("[WATCH] Возобновляю поиск новых сообщений о создании сделок...");
                 continue;
             }
 
             Console.WriteLine("Чат VO8R не найден: не удалось перейти к режиму ожидания реакции.");
+            await EnsureCryptoChatOpenedAsync(page);
             continue;
         }
 
@@ -275,6 +280,25 @@ async Task RunSalesDealsWatcherAsync(IPage page, string? scanAccountNameOverride
     }
 
     Console.WriteLine("Мониторинг новых сделок продажи остановлен.");
+}
+
+async Task EnsureCryptoChatOpenedAsync(IPage page)
+{
+    for (var attempt = 1; attempt <= 3; attempt++)
+    {
+        var opened = await ClickChatByTitleAsync(page, "Crypto");
+        if (opened)
+        {
+            await WaitWithStopAsync(page, 400);
+            return;
+        }
+
+        Console.WriteLine($"[WATCH] Не удалось открыть Crypto на попытке {attempt}/3.");
+        await WaitWithStopAsync(page, 400);
+        if (stopAllRequested) return;
+    }
+
+    Console.WriteLine("[WATCH] Не удалось гарантированно вернуться в чат Crypto после ожидания реакции.");
 }
 
 async Task RunSalesDealsTestAutomationAsync(IPage page, string? scanAccountNameOverride = null, IReadOnlyList<string>? actionKeywordPrefixesOverride = null, string? confirmPasswordOverride = null, IReadOnlyList<string>? notificationUsersOverride = null)
