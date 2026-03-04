@@ -276,7 +276,7 @@ async Task RunSalesDealsWatcherAsync(IPage page, string? scanAccountNameOverride
 
     while (!stopAllRequested)
     {
-        var saleDeal = await ExtractNewestCreatedSaleDealAsync(page);
+        var saleDeal = await ExtractNewestCreatedSaleDealWithRescansAsync(page);
         if (saleDeal is not null
             && !string.Equals(lastNotifiedDealId, saleDeal.DealId, StringComparison.OrdinalIgnoreCase))
         {
@@ -303,7 +303,7 @@ async Task RunSalesDealsWatcherAsync(IPage page, string? scanAccountNameOverride
             continue;
         }
 
-        await WaitWithStopAsync(page, 1000);
+        await WaitWithStopAsync(page, 300);
     }
 
     Console.WriteLine("Мониторинг новых сделок продажи остановлен.");
@@ -451,7 +451,7 @@ async Task RunSalesDealsTestAutomationAsync(IPage page, string? scanAccountNameO
 
     while (!stopAllRequested)
     {
-        var saleDeal = await ExtractNewestCreatedSaleDealAsync(page);
+        var saleDeal = await ExtractNewestCreatedSaleDealWithRescansAsync(page);
         if (saleDeal is null
             || string.Equals(lastProcessedDealId, saleDeal.DealId, StringComparison.OrdinalIgnoreCase))
         {
@@ -606,12 +606,33 @@ async Task<bool> ClickAnyDynamicActionButtonAsync(IPage page)
            || await ClickVisibleButtonByTextAsync(page, candidate.Original, startsWith: false, containsOnly: true, preferExact: false);
 }
 
+
+async Task<SaleDealNotification?> ExtractNewestCreatedSaleDealWithRescansAsync(IPage page)
+{
+    for (var attempt = 1; attempt <= 4; attempt++)
+    {
+        var deal = await ExtractNewestCreatedSaleDealAsync(page);
+        if (deal is not null)
+        {
+            return deal;
+        }
+
+        if (attempt < 4)
+        {
+            await WaitWithStopAsync(page, 250);
+            if (stopAllRequested) return null;
+        }
+    }
+
+    return null;
+}
+
 async Task<SaleDealNotification?> ExtractNewestCreatedSaleDealAsync(IPage page)
 {
     var messagesJson = await page.EvaluateAsync<string>("""
 () => {
   const normalize = (s) => (s || '').replace(/\r/g, '').trim();
-  const nodes = Array.from(document.querySelectorAll('.bubble, .message')).slice(-60);
+  const nodes = Array.from(document.querySelectorAll('.bubble, .message')).slice(-140);
   const texts = [];
 
   for (let i = nodes.length - 1; i >= 0; i--) {
@@ -1403,7 +1424,7 @@ async Task<DealOutcome> DetectDealOutcomeSignalAsync(IPage page, string? dealId)
   const text = (el) => (el?.innerText || el?.textContent || '').replace(/\s+/g, ' ').trim().toLowerCase();
   const wantedDealId = (args?.dealId || '').toString().trim().toLowerCase();
 
-  const messages = Array.from(document.querySelectorAll('.bubble, .message')).slice(-60);
+  const messages = Array.from(document.querySelectorAll('.bubble, .message')).slice(-140);
   for (let i = messages.length - 1; i >= 0; i--) {
     const t = text(messages[i]);
     if (!t) continue;
