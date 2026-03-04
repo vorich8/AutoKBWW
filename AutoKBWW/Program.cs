@@ -8,6 +8,9 @@ using var playwright = await Playwright.CreateAsync();
 double? cachedMarketPriceRub = null;
 DateTimeOffset cachedMarketPriceAt = DateTimeOffset.MinValue;
 bool stopAllRequested = false;
+bool remoteStopChecksEnabled = false;
+DateTimeOffset lastRemoteStopCheckAt = DateTimeOffset.MinValue;
+bool remoteStopCheckInProgress = false;
 
 var yandexBrowserPath = ResolveYandexBrowserPath();
 var userDataDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "AutoKBWW", "PlaywrightProfile");
@@ -97,9 +100,16 @@ async Task RunInteractiveLoopAsync(IPage page)
             continue;
         }
 
+        if (string.Equals(input, "V", StringComparison.OrdinalIgnoreCase) || string.Equals(input, "VOICE", StringComparison.OrdinalIgnoreCase) || string.Equals(input, "REMOTE", StringComparison.OrdinalIgnoreCase))
+        {
+            await RunVo8rRemoteControlAsync(page);
+            PrintCommandsHint();
+            continue;
+        }
+
         if (!int.TryParse(input, out var displayIndex))
         {
-            Console.WriteLine("Некорректный ввод. Укажите индекс, A, W, T, R, S или Q.");
+            Console.WriteLine("Некорректный ввод. Укажите индекс, A, W, T, V, R, S или Q.");
             PrintCommandsHint();
             continue;
         }
@@ -120,15 +130,110 @@ async Task RunInteractiveLoopAsync(IPage page)
 
 static void PrintCommandsHint()
 {
-    Console.WriteLine("Команды: индекс кнопки (0..), A - автосценарий P2P, W - мониторинг новых сделок продажи, T - тестовая авто-ветка продажи, R - перескан, S - стоп автоматики, Q - выход.");
+    Console.WriteLine("Команды: индекс кнопки (0..), A - автосценарий P2P, W - мониторинг новых сделок продажи, T - тестовая авто-ветка продажи, V - управление через VO8R, R - перескан, S - стоп автоматики, Q - выход.");
 }
 
-async Task RunSalesDealsWatcherAsync(IPage page)
+async Task RunVo8rRemoteControlAsync(IPage page)
 {
     stopAllRequested = false;
+    Console.WriteLine("Запускаю удаленное управление через VO8R...");
 
-    var scanAccountName = ReadSalesScanAccountName();
-    var notificationUsers = ReadNotificationUsers();
+    var openedVo8r = await ClickChatByTitleAsync(page, "VO8R");
+    if (!openedVo8r)
+    {
+        Console.WriteLine("Не удалось открыть чат VO8R для удаленного управления.");
+        return;
+    }
+
+    await page.WaitForTimeoutAsync(500);
+
+    var introSent = await SendMessageToCurrentChatAsync(page,
+        """
+Доступные автоматизации:
+W - WATCH (мониторинг продаж)
+T - TEST (тестовая ветка продаж)
+STOP - остановить текущую автоматику
+Отправьте команду одним сообщением.
+""");
+    if (!introSent)
+    {
+        Console.WriteLine("Не удалось отправить вводное сообщение в VO8R.");
+    }
+
+    string? lastCommand = null;
+    while (!stopAllRequested)
+    {
+        var command = await ReadLatestVo8rControlCommandAsync(page);
+        if (string.IsNullOrWhiteSpace(command) || string.Equals(command, lastCommand, StringComparison.Ordinal))
+        {
+            await page.WaitForTimeoutAsync(1000);
+            continue;
+        }
+
+        lastCommand = command;
+        Console.WriteLine($"[REMOTE] Получена команда из VO8R: {command}");
+
+        if (command.StartsWith("STOP", StringComparison.OrdinalIgnoreCase) || command == "S")
+        {
+            stopAllRequested = true;
+            break;
+        }
+
+        if (command.StartsWith("W", StringComparison.OrdinalIgnoreCase) || command.StartsWith("WATCH", StringComparison.OrdinalIgnoreCase))
+        {
+            await ClickChatByTitleAsync(page, "Crypto");
+            await RunSalesDealsWatcherAsync(page, scanAccountNameOverride: "VO8R-REMOTE", notificationUsersOverride: ["VO8R"]);
+            stopAllRequested = false;
+        }
+        else if (command.StartsWith("T", StringComparison.OrdinalIgnoreCase) || command.StartsWith("TEST", StringComparison.OrdinalIgnoreCase))
+        {
+            await ClickChatByTitleAsync(page, "Crypto");
+            await RunSalesDealsTestAutomationAsync(page, scanAccountNameOverride: "VO8R-REMOTE", actionKeywordPrefixesOverride: ["СБП"], confirmPasswordOverride: string.Empty, notificationUsersOverride: ["VO8R"]);
+            stopAllRequested = false;
+        }
+
+        await ClickChatByTitleAsync(page, "VO8R");
+        await page.WaitForTimeoutAsync(500);
+        await SendMessageToCurrentChatAsync(page, "Команда выполнена. Жду следующую.");
+    }
+
+    Console.WriteLine("Удаленное управление через VO8R остановлено.");
+}
+
+static async Task<string?> ReadLatestVo8rControlCommandAsync(IPage page)
+{
+    var text = await page.EvaluateAsync<string>("""
+() => {
+  const normalize = (s) => (s || '').replace(/\r/g, '').trim();
+  const nodes = Array.from(document.querySelectorAll('.bubble, .message')).reverse();
+
+  for (const node of nodes) {
+    const cls = (node.className || '').toString().toLowerCase();
+    const isOutgoing = cls.includes('own') || cls.includes('out') || cls.includes('is-out') || cls.includes('message-out');
+    if (isOutgoing) continue;
+
+    const raw = normalize(node.innerText || node.textContent || '');
+    if (!raw) continue;
+
+    const firstLine = raw.split('\n')[0].trim();
+    if (!firstLine) continue;
+    return firstLine;
+  }
+
+  return '';
+}
+""");
+
+    return string.IsNullOrWhiteSpace(text) ? null : text.Trim();
+}
+
+async Task RunSalesDealsWatcherAsync(IPage page, string? scanAccountNameOverride = null, IReadOnlyList<string>? notificationUsersOverride = null)
+{
+    stopAllRequested = false;
+    remoteStopChecksEnabled = true;
+
+    var scanAccountName = scanAccountNameOverride ?? ReadSalesScanAccountName();
+    var notificationUsers = notificationUsersOverride ?? ReadNotificationUsers();
     Console.WriteLine($"Мониторинг продаж (аккаунт: {scanAccountName}): уведомления будут отправляться: {string.Join(", ", notificationUsers)}");
     Console.WriteLine("Запускаю мониторинг. Ищу новые сообщения вида '💡 Создана новая сделка ...'. Для остановки нажмите S.");
 
@@ -159,11 +264,11 @@ async Task RunSalesDealsWatcherAsync(IPage page)
             if (vo8rOpened)
             {
                 await WaitForVo8rReactionDebugAsync(page, saleDeal);
-                return;
+                continue;
             }
 
             Console.WriteLine("Чат VO8R не найден: не удалось перейти к режиму ожидания реакции.");
-            return;
+            continue;
         }
 
         await WaitWithStopAsync(page, 1000);
@@ -172,14 +277,15 @@ async Task RunSalesDealsWatcherAsync(IPage page)
     Console.WriteLine("Мониторинг новых сделок продажи остановлен.");
 }
 
-async Task RunSalesDealsTestAutomationAsync(IPage page)
+async Task RunSalesDealsTestAutomationAsync(IPage page, string? scanAccountNameOverride = null, IReadOnlyList<string>? actionKeywordPrefixesOverride = null, string? confirmPasswordOverride = null, IReadOnlyList<string>? notificationUsersOverride = null)
 {
     stopAllRequested = false;
+    remoteStopChecksEnabled = true;
 
-    var scanAccountName = ReadSalesScanAccountName();
-    var actionKeywordPrefixes = ReadSalesActionKeywordPrefixes();
-    var confirmPassword = ReadSalesConfirmPassword();
-    var notificationUsers = ReadNotificationUsers();
+    var scanAccountName = scanAccountNameOverride ?? ReadSalesScanAccountName();
+    var actionKeywordPrefixes = actionKeywordPrefixesOverride ?? ReadSalesActionKeywordPrefixes();
+    var confirmPassword = confirmPasswordOverride ?? ReadSalesConfirmPassword();
+    var notificationUsers = notificationUsersOverride ?? ReadNotificationUsers();
 
     Console.WriteLine($"ТЕСТ-ПРОДАЖИ (аккаунт: {scanAccountName}). Ключевые слова кнопки: {string.Join(", ", actionKeywordPrefixes)}.");
 
@@ -508,38 +614,19 @@ async Task WaitForVo8rReactionDebugAsync(IPage page, SaleDealNotification deal)
 
 static bool LogVo8rReactionScan(SaleDealReactionScan scan, string dealId)
 {
-    Console.WriteLine($"[VO8R][{DateTime.Now:HH:mm:ss}] Поиск реакции: messageFound={scan.MessageFound}, outgoing={scan.IsOutgoing}, reactionNodes={scan.ReactionNodeCount}, reactionTexts={scan.ReactionTexts.Count}");
-
-    if (!string.IsNullOrWhiteSpace(scan.MessageTextPreview))
-    {
-        Console.WriteLine($"[VO8R] Сообщение: {scan.MessageTextPreview}");
-    }
-
     var hasReaction = scan.ReactionNodeCount > 0 || scan.ReactionTexts.Count > 0;
-    if (hasReaction)
+    if (!hasReaction)
     {
-        Console.WriteLine($"[VO8R] ✅ Обнаружена реакция на сообщение сделки #{dealId}.");
+        Console.WriteLine($"[VO8R][{DateTime.Now:HH:mm:ss}] Реакции по сделке #{dealId} пока нет.");
+        return false;
     }
 
-    if (scan.ReactionTexts.Count > 0)
-    {
-        Console.WriteLine("[VO8R] Найдены тексты/эмодзи реакций:");
-        foreach (var reaction in scan.ReactionTexts)
-        {
-            Console.WriteLine($"  - {reaction}");
-        }
-    }
+    var reactionsCompact = scan.ReactionTexts.Count > 0
+        ? string.Join(", ", scan.ReactionTexts.Take(3))
+        : $"reactionNodes={scan.ReactionNodeCount}";
 
-    if (scan.DebugNodes.Count > 0)
-    {
-        Console.WriteLine("[VO8R] Debug-узлы вокруг реакций:");
-        foreach (var node in scan.DebugNodes)
-        {
-            Console.WriteLine($"  - {node}");
-        }
-    }
-
-    return hasReaction;
+    Console.WriteLine($"[VO8R][{DateTime.Now:HH:mm:ss}] ✅ Реакция по сделке #{dealId}: {reactionsCompact}");
+    return true;
 }
 
 async Task ReturnToCryptoBotAfterReactionAsync(IPage page, string dealId)
@@ -738,6 +825,7 @@ static async Task<SaleDealReactionScan> CollectVo8rReactionScanAsync(IPage page,
 async Task RunP2PAutomationAsync(IPage page)
 {
     stopAllRequested = false;
+    remoteStopChecksEnabled = true;
 
     var targetPriceRub = await ReadTargetPriceRubAsync(
         getCached: () => (cachedMarketPriceRub, cachedMarketPriceAt),
@@ -1953,9 +2041,60 @@ async Task WaitWithStopAsync(IPage page, int totalMs)
             break;
         }
 
+        if (remoteStopChecksEnabled && !remoteStopCheckInProgress && DateTimeOffset.UtcNow - lastRemoteStopCheckAt >= TimeSpan.FromMinutes(10))
+        {
+            lastRemoteStopCheckAt = DateTimeOffset.UtcNow;
+            var remoteStop = await TryCheckRemoteStopCommandAsync(page);
+            if (remoteStop)
+            {
+                stopAllRequested = true;
+                break;
+            }
+        }
+
         var step = Math.Min(250, remaining);
         await page.WaitForTimeoutAsync(step);
         remaining -= step;
+    }
+}
+
+async Task<bool> TryCheckRemoteStopCommandAsync(IPage page)
+{
+    remoteStopCheckInProgress = true;
+    try
+    {
+        Console.WriteLine("[REMOTE] Проверяю в VO8R команду остановки...");
+
+        var openedVo8r = await ClickChatByTitleAsync(page, "VO8R");
+        if (!openedVo8r)
+        {
+            Console.WriteLine("[REMOTE] Не удалось открыть VO8R для проверки стоп-команды.");
+            return false;
+        }
+
+        await page.WaitForTimeoutAsync(300);
+
+        var command = await ReadLatestVo8rControlCommandAsync(page);
+        var shouldStop = !string.IsNullOrWhiteSpace(command) &&
+                         (command.StartsWith("STOP", StringComparison.OrdinalIgnoreCase)
+                          || command.StartsWith("СТОП", StringComparison.OrdinalIgnoreCase)
+                          || string.Equals(command, "S", StringComparison.OrdinalIgnoreCase));
+
+        await ClickChatByTitleAsync(page, "Crypto");
+        await page.WaitForTimeoutAsync(300);
+
+        if (shouldStop)
+        {
+            Console.WriteLine("[REMOTE] Получена команда STOP из VO8R.");
+            return true;
+        }
+
+        Console.WriteLine("[REMOTE] STOP-команда не найдена.");
+        return false;
+    }
+    finally
+    {
+        remoteStopCheckInProgress = false;
     }
 }
 
