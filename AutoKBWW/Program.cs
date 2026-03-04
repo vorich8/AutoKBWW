@@ -251,8 +251,8 @@ async Task RunSalesDealsWatcherAsync(IPage page, string? scanAccountNameOverride
 
     while (!stopAllRequested)
     {
-        var latestMessage = await ExtractLatestMessageTextAsync(page);
-        if (TryParseCreatedSaleDeal(latestMessage, out var saleDeal)
+        var saleDeal = await ExtractNewestCreatedSaleDealAsync(page);
+        if (saleDeal is not null
             && !string.Equals(lastNotifiedDealId, saleDeal.DealId, StringComparison.OrdinalIgnoreCase))
         {
             Console.WriteLine($"Найдена новая сделка продажи: #{saleDeal.DealId}, {saleDeal.AmountRub} RUB, банк: {saleDeal.Bank}.");
@@ -327,8 +327,8 @@ async Task RunSalesDealsTestAutomationAsync(IPage page, string? scanAccountNameO
 
     while (!stopAllRequested)
     {
-        var latestMessage = await ExtractLatestMessageTextAsync(page);
-        if (!TryParseCreatedSaleDeal(latestMessage, out var saleDeal)
+        var saleDeal = await ExtractNewestCreatedSaleDealAsync(page);
+        if (saleDeal is null
             || string.Equals(lastProcessedDealId, saleDeal.DealId, StringComparison.OrdinalIgnoreCase))
         {
             await WaitWithStopAsync(page, 1000);
@@ -480,6 +480,36 @@ async Task<bool> ClickAnyDynamicActionButtonAsync(IPage page)
     Console.WriteLine($"[TEST] Пытаюсь нажать динамическую кнопку: '{candidate.Original}'.");
     return await ClickVisibleButtonByTextAsync(page, candidate.Original, startsWith: true, preferExact: false)
            || await ClickVisibleButtonByTextAsync(page, candidate.Original, startsWith: false, containsOnly: true, preferExact: false);
+}
+
+static async Task<SaleDealNotification?> ExtractNewestCreatedSaleDealAsync(IPage page)
+{
+    var messagesJson = await page.EvaluateAsync<string>("""
+() => {
+  const normalize = (s) => (s || '').replace(//g, '').trim();
+  const nodes = Array.from(document.querySelectorAll('.bubble, .message')).slice(-60);
+  const texts = [];
+
+  for (let i = nodes.length - 1; i >= 0; i--) {
+    const raw = normalize(nodes[i]?.innerText || nodes[i]?.textContent || '');
+    if (!raw) continue;
+    texts.push(raw);
+  }
+
+  return JSON.stringify(texts);
+}
+""");
+
+    var messages = ParseStringArrayJson(messagesJson);
+    foreach (var message in messages)
+    {
+        if (TryParseCreatedSaleDeal(message, out var deal))
+        {
+            return deal;
+        }
+    }
+
+    return null;
 }
 
 static async Task<string> ExtractLatestMessageTextAsync(IPage page)
