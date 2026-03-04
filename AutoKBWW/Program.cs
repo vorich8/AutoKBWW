@@ -2677,14 +2677,25 @@ async Task<bool> ClickChatByTitleAsync(IPage page, string titlePart)
 (titlePart) => {
   const normalize = (s) => (s || '').replace(/\s+/g, ' ').trim().toLowerCase();
   const wanted = normalize(titlePart);
-  const text = (el) => (el?.textContent || '').replace(/\s+/g, ' ').trim();
+  const fullText = (el) => (el?.textContent || '').replace(/\s+/g, ' ').trim();
+  const titleText = (item) => {
+    if (!item) return '';
+    const titleNode = item.querySelector('.title, .fullName, .user-title, [dir="auto"]');
+    const title = (titleNode?.textContent || '').replace(/\s+/g, ' ').trim();
+    if (title) return title;
+    return fullText(item);
+  };
 
   const items = Array.from(document.querySelectorAll('.chatlist-chat, .chat-item, [data-peer-id], .ListItem'));
-  const hit = items.find((item) => normalize(text(item)).includes(wanted));
+
+  const exactHit = items.find((item) => normalize(titleText(item)) === wanted);
+  const partialHit = items.find((item) => normalize(titleText(item)).includes(wanted));
+  const hit = exactHit || partialHit;
   if (!hit) return null;
 
   const rect = hit.getBoundingClientRect();
-  return JSON.stringify({ x: rect.left + rect.width / 2, y: rect.top + rect.height / 2, label: text(hit) });
+  const label = titleText(hit) || fullText(hit);
+  return JSON.stringify({ x: rect.left + rect.width / 2, y: rect.top + rect.height / 2, label });
 }
 """, titlePart);
 
