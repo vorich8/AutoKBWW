@@ -183,7 +183,7 @@ async Task RunVo8rRemoteControlAsync(IPage page)
         else if (string.Equals(command, "T", StringComparison.OrdinalIgnoreCase))
         {
             handledCommand = true;
-            await ClickChatByTitleAsync(page, "Crypto");
+            await ClickChatByTitleAsync(page, "Crypto Bot");
             await RunSalesDealsTestAutomationAsync(page, scanAccountNameOverride: "VO8R-REMOTE", actionKeywordPrefixesOverride: ["СБП"], confirmPasswordOverride: string.Empty, notificationUsersOverride: ["VO8R"]);
             stopAllRequested = false;
         }
@@ -344,17 +344,13 @@ bool IsCryptoChatTitle(string? title)
     }
 
     return normalized.Equals("Crypto Bot", StringComparison.OrdinalIgnoreCase)
-           || normalized.Equals("Crypto", StringComparison.OrdinalIgnoreCase)
            || normalized.Equals("Крипто Бот", StringComparison.OrdinalIgnoreCase)
-           || normalized.Equals("Крипто", StringComparison.OrdinalIgnoreCase)
            || normalized.Equals("CryptoBot", StringComparison.OrdinalIgnoreCase);
 }
 
 async Task<bool> OpenCryptoChatAsync(IPage page)
 {
-    if (await ClickChatByTitleAsync(page, "Crypto Bot")) return true;
-    if (await ClickChatByTitleAsync(page, "Crypto")) return true;
-    return false;
+    return await ClickChatByTitleAsync(page, "Crypto Bot");
 }
 
 async Task<string> ReadActiveChatTitleAsync(IPage page)
@@ -1329,7 +1325,7 @@ async Task<bool> RestartP2PAfterRejectedDealAsync(IPage page)
     await WaitWithStopAsync(page, 2000);
     if (stopAllRequested) return false;
 
-    var backToBot = await ClickChatByTitleAsync(page, "Crypto");
+    var backToBot = await ClickChatByTitleAsync(page, "Crypto Bot");
     if (!backToBot) return false;
 
     await WaitWithStopAsync(page, 2000);
@@ -1363,7 +1359,7 @@ async Task NotifyUsersWithTextAsync(IPage page, IReadOnlyList<string> users, str
     await WaitWithStopAsync(page, 2000);
     if (stopAllRequested) return;
 
-    await ClickChatByTitleAsync(page, "Crypto");
+    await ClickChatByTitleAsync(page, "Crypto Bot");
     await WaitWithStopAsync(page, 2000);
 }
 
@@ -1921,7 +1917,7 @@ async Task SendNoDealsNotificationAsync(IPage page, IReadOnlyList<string> users,
     await WaitWithStopAsync(page, 2000);
     if (stopAllRequested) return;
 
-    var backToBot = await ClickChatByTitleAsync(page, "Crypto");
+    var backToBot = await ClickChatByTitleAsync(page, "Crypto Bot");
     if (!backToBot)
     {
         Console.WriteLine("Не удалось вернуться в чат CryptoBot.");
@@ -1987,7 +1983,7 @@ async Task NotifyRejectedDealToUsersAsync(IPage page, IReadOnlyList<string> user
     await WaitWithStopAsync(page, 2000);
     if (stopAllRequested) return;
 
-    var backToBot = await ClickChatByTitleAsync(page, "Crypto");
+    var backToBot = await ClickChatByTitleAsync(page, "Crypto Bot");
     if (!backToBot)
     {
         Console.WriteLine("Не удалось вернуться в чат CryptoBot после уведомления об отмене сделки.");
@@ -2039,7 +2035,7 @@ async Task NotifyFoundDealToUsersAsync(IPage page, IReadOnlyList<string> users, 
     await WaitWithStopAsync(page, 2000);
     if (stopAllRequested) return;
 
-    var backToBot = await ClickChatByTitleAsync(page, "Crypto");
+    var backToBot = await ClickChatByTitleAsync(page, "Crypto Bot");
     if (!backToBot)
     {
         Console.WriteLine("Не удалось вернуться в чат CryptoBot после уведомления.");
@@ -2306,7 +2302,7 @@ async Task<bool> TryCheckRemoteStopCommandAsync(IPage page)
         var shouldStop = !string.IsNullOrWhiteSpace(command) &&
                          string.Equals(command, "S", StringComparison.OrdinalIgnoreCase);
 
-        await ClickChatByTitleAsync(page, "Crypto");
+        await ClickChatByTitleAsync(page, "Crypto Bot");
         await page.WaitForTimeoutAsync(300);
 
         if (shouldStop)
