@@ -289,22 +289,39 @@ async Task RunSalesDealsWatcherAsync(IPage page, string? scanAccountNameOverride
 
 async Task<bool> EnsureCryptoChatOpenedAsync(IPage page)
 {
-    for (var attempt = 1; attempt <= 3; attempt++)
+    for (var attempt = 1; attempt <= 4; attempt++)
     {
         var opened = await ClickChatByTitleAsync(page, "Crypto");
-        if (opened)
+        await WaitWithStopAsync(page, 450);
+        if (stopAllRequested) return false;
+
+        var activeTitle = await ReadActiveChatTitleAsync(page);
+        var isCryptoActive = !string.IsNullOrWhiteSpace(activeTitle)
+                             && activeTitle.Contains("crypto", StringComparison.OrdinalIgnoreCase);
+
+        if (opened && isCryptoActive)
         {
-            await WaitWithStopAsync(page, 400);
+            Console.WriteLine($"[WATCH] Подтвержден переход в чат: {activeTitle}.");
             return true;
         }
 
-        Console.WriteLine($"[WATCH] Не удалось открыть Crypto на попытке {attempt}/3.");
-        await WaitWithStopAsync(page, 400);
-        if (stopAllRequested) return false;
+        Console.WriteLine($"[WATCH] Попытка {attempt}/4: переход в Crypto не подтвержден (активный чат: '{activeTitle}').");
     }
 
     Console.WriteLine("[WATCH] Не удалось гарантированно вернуться в чат Crypto после ожидания реакции.");
     return false;
+}
+
+async Task<string> ReadActiveChatTitleAsync(IPage page)
+{
+    var title = await page.EvaluateAsync<string>("""
+() => {
+  const read = (el) => (el?.innerText || el?.textContent || '').trim();
+  return read(document.querySelector('.chat-info .title, .chat-info-wrapper .title, .topbar .title, header .title'));
+}
+""");
+
+    return title ?? string.Empty;
 }
 
 async Task RunSalesDealsTestAutomationAsync(IPage page, string? scanAccountNameOverride = null, IReadOnlyList<string>? actionKeywordPrefixesOverride = null, string? confirmPasswordOverride = null, IReadOnlyList<string>? notificationUsersOverride = null)
@@ -723,14 +740,15 @@ async Task ReturnToCryptoBotAfterReactionAsync(IPage page, string dealId)
     }
 
     var backToBot = await EnsureCryptoChatOpenedAsync(page);
+    var activeTitle = await ReadActiveChatTitleAsync(page);
     if (!backToBot)
     {
-        Console.WriteLine("[VO8R] Не удалось вернуться в чат Crypto Bot после обнаружения реакции.");
+        Console.WriteLine($"[VO8R] Не удалось вернуться в чат Crypto Bot после обнаружения реакции (активный чат: '{activeTitle}').");
         await SendVo8rProgressAsync(page, $"[W] Сделка #{dealId}: не удалось перейти в Crypto Bot автоматически.");
     }
     else
     {
-        Console.WriteLine("[VO8R] Успешно вернулся в чат Crypto Bot после реакции.");
+        Console.WriteLine($"[VO8R] Успешно вернулся в чат Crypto Bot после реакции (активный чат: '{activeTitle}').");
     }
 }
 
