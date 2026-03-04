@@ -767,6 +767,11 @@ async Task WaitForVo8rReactionDebugAsync(IPage page, SaleDealNotification deal)
 
     while (!stopAllRequested)
     {
+        if (await TryHandleImmediateVo8rStopAsync(page, $"[W] Сделка #{deal.DealId}"))
+        {
+            break;
+        }
+
         var scan = await CollectVo8rReactionScanAsync(page, deal.DealId);
         var hasReaction = LogVo8rReactionScan(scan, deal.DealId);
 
@@ -812,6 +817,11 @@ async Task WaitForVo8rReactionDebugAsync(IPage page, SaleDealNotification deal)
         var callWaitUntil = DateTimeOffset.UtcNow.AddSeconds(30);
         while (!stopAllRequested && DateTimeOffset.UtcNow < callWaitUntil)
         {
+            if (await TryHandleImmediateVo8rStopAsync(page, $"[W] Сделка #{deal.DealId}"))
+            {
+                break;
+            }
+
             var callScan = await CollectVo8rReactionScanAsync(page, deal.DealId);
             var callHasReaction = LogVo8rReactionScan(callScan, deal.DealId);
             if (callHasReaction)
@@ -828,6 +838,19 @@ async Task WaitForVo8rReactionDebugAsync(IPage page, SaleDealNotification deal)
     }
 
     Console.WriteLine("Ожидание реакции в чате VO8R остановлено.");
+}
+
+async Task<bool> TryHandleImmediateVo8rStopAsync(IPage page, string scope)
+{
+    var command = await ReadLatestVo8rControlCommandAsync(page);
+    if (!string.Equals(command, "S", StringComparison.OrdinalIgnoreCase))
+    {
+        return false;
+    }
+
+    stopAllRequested = true;
+    Console.WriteLine($"[REMOTE] Получена команда S во время {scope}. Останавливаю выполнение.");
+    return true;
 }
 
 bool LogVo8rReactionScan(SaleDealReactionScan scan, string dealId)
