@@ -237,6 +237,9 @@ async Task RunSalesDealsWatcherAsync(IPage page, string? scanAccountNameOverride
     Console.WriteLine($"Мониторинг продаж (аккаунт: {scanAccountName}): уведомления будут отправляться: {string.Join(", ", notificationUsers)}");
     Console.WriteLine("Запускаю мониторинг. Ищу новые сообщения вида '💡 Создана новая сделка ...'. Для остановки нажмите S.");
 
+    await NotifyUsersWithTextAsync(page, notificationUsers, $"[{scanAccountName}] Запускаю W: начинаю сканировать новые сделки.");
+    if (stopAllRequested) return;
+
     var openedCrypto = await ClickChatByTitleAsync(page, "Crypto");
     if (!openedCrypto)
     {
@@ -266,13 +269,15 @@ async Task RunSalesDealsWatcherAsync(IPage page, string? scanAccountNameOverride
                 await WaitForVo8rReactionDebugAsync(page, saleDeal);
                 if (stopAllRequested) return;
 
-                await EnsureCryptoChatOpenedAsync(page);
-                Console.WriteLine("[WATCH] Возобновляю поиск новых сообщений о создании сделок...");
+                var backToCrypto = await EnsureCryptoChatOpenedAsync(page);
+                Console.WriteLine(backToCrypto
+                    ? "[WATCH] Возобновляю поиск новых сообщений о создании сделок..."
+                    : "[WATCH] Возврат в Crypto не подтвержден, но продолжаю поиск.");
                 continue;
             }
 
             Console.WriteLine("Чат VO8R не найден: не удалось перейти к режиму ожидания реакции.");
-            await EnsureCryptoChatOpenedAsync(page);
+            _ = await EnsureCryptoChatOpenedAsync(page);
             continue;
         }
 
@@ -282,7 +287,7 @@ async Task RunSalesDealsWatcherAsync(IPage page, string? scanAccountNameOverride
     Console.WriteLine("Мониторинг новых сделок продажи остановлен.");
 }
 
-async Task EnsureCryptoChatOpenedAsync(IPage page)
+async Task<bool> EnsureCryptoChatOpenedAsync(IPage page)
 {
     for (var attempt = 1; attempt <= 3; attempt++)
     {
@@ -290,15 +295,16 @@ async Task EnsureCryptoChatOpenedAsync(IPage page)
         if (opened)
         {
             await WaitWithStopAsync(page, 400);
-            return;
+            return true;
         }
 
         Console.WriteLine($"[WATCH] Не удалось открыть Crypto на попытке {attempt}/3.");
         await WaitWithStopAsync(page, 400);
-        if (stopAllRequested) return;
+        if (stopAllRequested) return false;
     }
 
     Console.WriteLine("[WATCH] Не удалось гарантированно вернуться в чат Crypto после ожидания реакции.");
+    return false;
 }
 
 async Task RunSalesDealsTestAutomationAsync(IPage page, string? scanAccountNameOverride = null, IReadOnlyList<string>? actionKeywordPrefixesOverride = null, string? confirmPasswordOverride = null, IReadOnlyList<string>? notificationUsersOverride = null)
@@ -716,10 +722,11 @@ async Task ReturnToCryptoBotAfterReactionAsync(IPage page, string dealId)
         return;
     }
 
-    var backToBot = await ClickChatByTitleAsync(page, "Crypto");
+    var backToBot = await EnsureCryptoChatOpenedAsync(page);
     if (!backToBot)
     {
         Console.WriteLine("[VO8R] Не удалось вернуться в чат Crypto Bot после обнаружения реакции.");
+        await SendVo8rProgressAsync(page, $"[W] Сделка #{dealId}: не удалось перейти в Crypto Bot автоматически.");
     }
     else
     {
