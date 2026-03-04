@@ -532,7 +532,7 @@ static async Task<string> ExtractLatestMessageTextAsync(IPage page)
 static bool TryParseCreatedSaleDeal(string message, out SaleDealNotification deal)
 {
     deal = default!;
-    if (string.IsNullOrWhiteSpace(message))
+        DealId = dealId.ToUpperInvariant(),
     {
         return false;
     }
