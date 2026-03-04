@@ -630,9 +630,14 @@ async Task WaitForVo8rReactionDebugAsync(IPage page, SaleDealNotification deal)
 
     while (!stopAllRequested)
     {
-        var scan = await CollectVo8rReactionScanAsync(page, deal.DealId);
-        var hasReaction = LogVo8rReactionScan(scan, deal.DealId);
-
+        if (outgoingCallSeen)
+        {
+            Console.WriteLine("[VO8R] Обнаружено системное сообщение 'Outgoing Call'.");
+        }
+        else
+        {
+            Console.WriteLine("[VO8R] Сообщение 'Outgoing Call' пока не найдено, продолжаю ожидание реакции.");
+        }
         if (hasReaction)
         {
             await ReturnToCryptoBotAfterReactionAsync(page, deal.DealId);
