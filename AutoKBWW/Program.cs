@@ -174,7 +174,7 @@ async Task RunP2PAutomationAsync(IPage page)
             continue;
         }
 
-        var actionFlowCompleted = await ExecuteDealActionFlowAsync(page, best);
+        var actionFlowCompleted = await ExecuteDealActionFlowAsync(page, best, volumeFilter);
         if (stopAllRequested)
         {
             await StopWithNotifyAsync("Автоматизация остановлена клавишей S.");
@@ -482,7 +482,7 @@ bool HasDealCreationProblem(string lowerMessage)
            || lowerMessage.Contains("в пределах от");
 }
 
-async Task<bool> ExecuteDealActionFlowAsync(IPage page, P2POffer best)
+async Task<bool> ExecuteDealActionFlowAsync(IPage page, P2POffer best, VolumeFilter volumeFilter)
 {
     if (best is null)
     {
