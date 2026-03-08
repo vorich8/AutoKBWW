@@ -504,28 +504,64 @@ async Task<bool> ExecuteDealActionFlowAsync(IPage page, P2POffer best)
         return false;
     }
 
-    Console.WriteLine("Жду 0.7 сек перед проверкой кнопки 'Макс.'...");
+    Console.WriteLine("Жду 0.7 сек перед проверкой кнопок сделки...");
     await WaitWithStopAsync(page, 700);
     if (stopAllRequested) return false;
 
-    var maxClicked = await ClickAnyDealActionButtonWithRetryAsync(page, "Макс.", "Макс");
-    if (maxClicked)
+    var actionState = await GetDealActionStateAsync(page);
+    Console.WriteLine($"Проверка кнопок сделки: Купить={actionState.HasBuy}, Макс={actionState.HasMax}, Создать={actionState.HasCreate}, УказатьRUB={actionState.HasSpecifyRub}.");
+
+    if (actionState.HasSpecifyRub)
     {
-        Console.WriteLine("Нажата 'Макс.'. Жду 0.7 сек перед нажатием 'Создать сделку'...");
-        await WaitWithStopAsync(page, 700);
-        if (stopAllRequested) return false;
-
-        var createAfterMaxClicked = await ClickAnyDealActionButtonWithRetryAsync(page, "Создать сделку", "Создать");
-        if (!createAfterMaxClicked)
+        var targetAmount = CalculateTargetDealAmountRub(best, volumeFilter);
+        if (targetAmount is null)
         {
-            Console.WriteLine("Кнопка 'Создать сделку' не найдена после нажатия 'Макс.'.");
-            return false;
+            Console.WriteLine("Не удалось вычислить сумму RUB по ограничениям объема. Нажимаю 'Макс.' как запасной сценарий...");
         }
+        else
+        {
+            var entered = await ClickSpecifyRubAndEnterAmountAsync(page, targetAmount.Value);
+            if (entered)
+            {
+                Console.WriteLine("Сумма в RUB введена через 'Указать в RUB'. Жду 0.7 сек перед нажатием 'Создать сделку'...");
+                await WaitWithStopAsync(page, 700);
+                if (stopAllRequested) return false;
 
-        return true;
+                var createAfterAmountClicked = await ClickAnyDealActionButtonWithRetryAsync(page, "Создать сделку", "Создать");
+                if (!createAfterAmountClicked)
+                {
+                    Console.WriteLine("Кнопка 'Создать сделку' не найдена после ввода суммы в RUB.");
+                    return false;
+                }
+
+                return true;
+            }
+
+            Console.WriteLine("Не удалось ввести сумму через 'Указать в RUB'. Пробую сценарий с 'Макс.'...");
+        }
     }
 
-    Console.WriteLine("Кнопка 'Макс.' не найдена. Пробую сразу нажать 'Создать сделку'...");
+    if (actionState.HasMax)
+    {
+        var maxClicked = await ClickAnyDealActionButtonWithRetryAsync(page, "Макс.", "Макс");
+        if (maxClicked)
+        {
+            Console.WriteLine("Нажата 'Макс.'. Жду 0.7 сек перед нажатием 'Создать сделку'...");
+            await WaitWithStopAsync(page, 700);
+            if (stopAllRequested) return false;
+
+            var createAfterMaxClicked = await ClickAnyDealActionButtonWithRetryAsync(page, "Создать сделку", "Создать");
+            if (!createAfterMaxClicked)
+            {
+                Console.WriteLine("Кнопка 'Создать сделку' не найдена после нажатия 'Макс.'.");
+                return false;
+            }
+
+            return true;
+        }
+    }
+
+    Console.WriteLine("Кнопки 'Указать в RUB' и 'Макс.' не сработали. Пробую сразу нажать 'Создать сделку'...");
     Console.WriteLine("Жду 0.7 сек перед нажатием 'Создать сделку'...");
     await WaitWithStopAsync(page, 700);
     if (stopAllRequested) return false;
@@ -538,6 +574,141 @@ async Task<bool> ExecuteDealActionFlowAsync(IPage page, P2POffer best)
     }
 
     return true;
+}
+
+
+
+static double? CalculateTargetDealAmountRub(P2POffer offer, VolumeFilter filter)
+{
+    var lowerBound = Math.Max(filter.MinRub ?? 0, offer.VolumeMin ?? 0);
+    var offerMax = offer.VolumeMax ?? offer.VolumeMin ?? filter.MaxRub;
+    var upperBound = Math.Min(filter.MaxRub, offerMax);
+
+    if (upperBound < lowerBound || upperBound <= 0)
+    {
+        return null;
+    }
+
+    var rounded = Math.Floor(upperBound);
+    if (rounded < lowerBound)
+    {
+        rounded = Math.Ceiling(lowerBound);
+    }
+
+    return rounded;
+}
+
+async Task<DealActionState> GetDealActionStateAsync(IPage page)
+{
+    try
+    {
+        return await page.EvaluateAsync<DealActionState>("""
+() => {
+  const text = (el) => (el?.textContent || '').replace(/\s+/g, ' ').trim().toLowerCase();
+  const visible = (el) => {
+    const rect = el.getBoundingClientRect();
+    const style = getComputedStyle(el);
+    return rect.width > 0 && rect.height > 0 && style.visibility !== 'hidden' && style.display !== 'none';
+  };
+
+  const labels = Array.from(document.querySelectorAll('button, [role="button"], .reply-markup-button, .Button'))
+    .filter(visible)
+    .map(text);
+
+  const hasAny = (checks) => labels.some((label) => checks.some((check) => label.includes(check)));
+
+  return {
+    HasBuy: hasAny(['купить usdt', 'купить']),
+    HasMax: hasAny(['макс.','макс']),
+    HasCreate: hasAny(['создать сделку', 'создать']),
+    HasSpecifyRub: hasAny(['указать в rub', 'указать rub'])
+  };
+}
+""");
+    }
+    catch
+    {
+        return new DealActionState();
+    }
+}
+
+async Task<bool> ClickSpecifyRubAndEnterAmountAsync(IPage page, double amountRub)
+{
+    Console.WriteLine($"Найдена кнопка 'Указать в RUB'. Ввожу сумму {amountRub.ToString(CultureInfo.InvariantCulture)} RUB...");
+
+    var specifyRubClicked = await ClickAnyDealActionButtonWithRetryAsync(page, "Указать в RUB", "Указать RUB", "RUB");
+    if (!specifyRubClicked)
+    {
+        Console.WriteLine("Кнопка 'Указать в RUB' не найдена для ввода суммы.");
+        return false;
+    }
+
+    await WaitWithStopAsync(page, 350);
+    if (stopAllRequested) return false;
+
+    var entered = await SetDealAmountRubAsync(page, amountRub);
+    if (!entered)
+    {
+        Console.WriteLine("Не удалось заполнить поле суммы RUB.");
+        return false;
+    }
+
+    Console.WriteLine($"Сумма {amountRub.ToString(CultureInfo.InvariantCulture)} RUB успешно введена.");
+    return true;
+}
+
+async Task<bool> SetDealAmountRubAsync(IPage page, double amountRub)
+{
+    var value = amountRub.ToString(CultureInfo.InvariantCulture);
+
+    return await page.EvaluateAsync<bool>("""
+([amount]) => {
+  const isVisible = (el) => {
+    const rect = el.getBoundingClientRect();
+    const style = getComputedStyle(el);
+    return rect.width > 0 && rect.height > 0 && style.visibility !== 'hidden' && style.display !== 'none';
+  };
+
+  const composerClassMarkers = ['input-message-input', 'composer'];
+  const isChatComposer = (el) => {
+    const cls = (el.className || '').toString().toLowerCase();
+    return composerClassMarkers.some((marker) => cls.includes(marker));
+  };
+
+  const controls = Array.from(document.querySelectorAll('input, textarea, [contenteditable="true"]'))
+    .filter(isVisible)
+    .filter((el) => !isChatComposer(el));
+
+  if (controls.length === 0) return false;
+
+  const rank = (el) => {
+    const blob = `${(el.getAttribute('placeholder') || '')} ${(el.getAttribute('aria-label') || '')} ${(el.getAttribute('name') || '')}`.toLowerCase();
+    let score = 0;
+    if (blob.includes('rub')) score += 10;
+    if (blob.includes('сумм')) score += 6;
+    if (blob.includes('amount')) score += 4;
+    return score;
+  };
+
+  controls.sort((a, b) => rank(b) - rank(a));
+  const target = controls[0];
+  target.focus();
+
+  if (target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement) {
+    const setter = Object.getOwnPropertyDescriptor(target.constructor.prototype, 'value')?.set;
+    if (setter) setter.call(target, amount);
+    else target.value = amount;
+    target.dispatchEvent(new Event('input', { bubbles: true }));
+    target.dispatchEvent(new Event('change', { bubbles: true }));
+    return true;
+  }
+
+  target.textContent = amount;
+  target.dispatchEvent(new Event('input', { bubbles: true }));
+  target.dispatchEvent(new Event('change', { bubbles: true }));
+  return true;
+}
+""", new object[] { value });
 }
 
 async Task<bool> ClickDealActionButtonWithRetryAsync(IPage page, string buttonText)
@@ -1601,6 +1772,14 @@ file sealed class ClickTarget
 file sealed class ButtonDebugInfo
 {
     public required string Label { get; init; }
+}
+
+file sealed class DealActionState
+{
+    public bool HasBuy { get; init; }
+    public bool HasMax { get; init; }
+    public bool HasCreate { get; init; }
+    public bool HasSpecifyRub { get; init; }
 }
 
 file sealed class P2POffer
